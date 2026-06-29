@@ -11,6 +11,8 @@
 #include <mfidl.h>
 #include <evr.h>
 #include <propvarutil.h>
+#include <timeapi.h>
+#include <dwmapi.h>
 
 #include <atomic>
 #include <cstdio>
@@ -24,6 +26,8 @@
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "evr.lib")
 #pragma comment(lib, "strmiids.lib")
+#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 namespace motion {
 namespace {
@@ -38,8 +42,6 @@ constexpr UINT OCCLUSION_TIMER     = 1;
 constexpr UINT GRACE_TIMER         = 2;
 constexpr UINT HOST_TIMER          = 3;
 enum { IDM_MUTE = 1001, IDM_OPEN = 1002, IDM_STOP = 1003 };
-
-// ── Logging ──────────────────────────────────────────────────────────────────
 
 static std::wofstream g_log;
 
@@ -67,8 +69,6 @@ void openLog() {
     g_log.open(dir + L"\\engine.log", std::ios::out | std::ios::trunc);
     logLine(L"=== MotionCLI engine started ===");
 }
-
-// ── Misc helpers ──────────────────────────────────────────────────────────────
 
 bool fileExists(const std::wstring& p) {
     DWORD a = GetFileAttributesW(p.c_str());
@@ -101,51 +101,35 @@ bool processAlive(DWORD pid) {
     return alive;
 }
 
-// ── Desktop host discovery ────────────────────────────────────────────────────
-//
-// The goal: embed our wallpaper window BEHIND the desktop icon layer.
-// Hierarchy after SendMessage(Progman, 0x052C, ...):
-//
-//   Progman
-//   ├─ WorkerW  ← icon host  (contains SHELLDLL_DefView → SysListView32)
-//   └─ WorkerW  ← wallpaper  (empty, we parent our pane here)
-//
-// EnumWindows is top→bottom z-order.  The sibling WorkerW found AFTER the icon
-// host is lower z-order = physically behind icons.  This is the Lively pattern.
-
-static HWND  g_progman        = nullptr;
-static HWND  g_workerW        = nullptr;   // empty WorkerW — our wallpaper host
-static HWND  g_defviewHost    = nullptr;   // WorkerW that owns SHELLDLL_DefView
-static HWND  g_defview        = nullptr;   // SHELLDLL_DefView
-static HWND  g_listview       = nullptr;   // SysListView32 inside DefView
-static bool  g_raisedDesktop  = false;     // Win11 WS_EX_NOREDIRECTIONBITMAP path
+static HWND g_progman       = nullptr;
+static HWND g_workerW       = nullptr;
+static HWND g_defviewHost   = nullptr;
+static HWND g_defview       = nullptr;
+static HWND g_listview      = nullptr;
+static bool g_raisedDesktop = false;
 
 BOOL CALLBACK enumWorkerWCb(HWND hwnd, LPARAM) {
     HWND dv = FindWindowExW(hwnd, nullptr, L"SHELLDLL_DefView", nullptr);
-    if (!dv) return TRUE;  // keep searching
+    if (!dv) return TRUE;
 
     g_defviewHost = hwnd;
     g_defview     = dv;
     g_listview    = FindWindowExW(dv, nullptr, L"SysListView32", nullptr);
-
-    // Find the sibling WorkerW that comes AFTER hwnd in top-level z-order.
-    // hwndParent=nullptr → top-level search; hwndChildAfter=hwnd → start after icon host.
-    g_workerW = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
+    g_workerW     = FindWindowExW(nullptr, hwnd, L"WorkerW", nullptr);
 
     logf(L"enumWorkerW: iconHost=0x%p defview=0x%p listview=0x%p wallpaperWorkerW=0x%p",
          hwnd, dv, g_listview, g_workerW);
-    return FALSE;  // stop — we found what we need
+    return FALSE;
 }
 
 void makeIconsTransparent() {
     if (!g_listview || !IsWindow(g_listview)) return;
-    SendMessageW(g_listview, 0x1001, 0, (LPARAM)-1); // LVM_SETBKCOLOR   CLR_NONE
-    SendMessageW(g_listview, 0x1026, 0, (LPARAM)-1); // LVM_SETTEXTBKCOLOR CLR_NONE
+    SendMessageW(g_listview, 0x1001, 0, (LPARAM)-1);
+    SendMessageW(g_listview, 0x1026, 0, (LPARAM)-1);
     InvalidateRect(g_listview, nullptr, TRUE);
     logf(L"Icon background cleared: listview=0x%p", g_listview);
 }
 
-// Returns the HWND to use as parent for wallpaper panes (WorkerW or Progman fallback).
 HWND findWallpaperHost() {
     g_progman = g_workerW = g_defviewHost = g_defview = g_listview = nullptr;
     g_raisedDesktop = false;
@@ -153,17 +137,12 @@ HWND findWallpaperHost() {
     g_progman = FindWindowW(L"Progman", nullptr);
     if (!g_progman) { logLine(L"ERROR: Progman not found"); return nullptr; }
 
-    // Windows 11 "raised desktop" uses WS_EX_NOREDIRECTIONBITMAP on Progman.
-    // In that mode the empty WorkerW may not appear; we fall back to Progman itself.
     g_raisedDesktop = !!(GetWindowLongPtrW(g_progman, GWL_EXSTYLE) & WS_EX_NOREDIRECTIONBITMAP);
     logf(L"Progman=0x%p  raisedDesktop=%d", g_progman, (int)g_raisedDesktop);
 
-    // Spawn the empty wallpaper WorkerW beneath the icon layer.
-    // wParam=0 lParam=0 matches CodeProject + most open-source implementations.
     DWORD_PTR res = 0;
     SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL | SMTO_ABORTIFHUNG, 1000, &res);
 
-    // Poll — the WorkerW may take a few frames to appear.
     for (int i = 0; i < 20; ++i) {
         g_workerW = nullptr;
         EnumWindows(enumWorkerWCb, 0);
@@ -175,14 +154,11 @@ HWND findWallpaperHost() {
         Sleep(50);
     }
 
-    // Fallback: on raised-desktop or when 0x052C didn't spawn a sibling WorkerW,
-    // parent directly into Progman and z-order below SHELLDLL_DefView.
     logLine(L"No empty WorkerW found — using Progman as host.");
     makeIconsTransparent();
     return g_progman;
 }
 
-// ── MFPlay structs ────────────────────────────────────────────────────────────
 
 struct PaneRT;
 
@@ -210,16 +186,16 @@ private:
 };
 
 struct PaneRT {
-    HWND             hwnd        = nullptr;
-    IMFPMediaPlayer* player      = nullptr;
-    PlayerCB*        cb          = nullptr;
-    RECT             absRect     = {};
-    bool             isSpan      = false;
-    bool             paused      = false;
-    bool             muted       = false;
-    bool             fullyStopped= false;
-    float            rate        = 1.0f;
-    DWORD            pauseTick   = 0;
+    HWND             hwnd         = nullptr;
+    IMFPMediaPlayer* player       = nullptr;
+    PlayerCB*        cb           = nullptr;
+    RECT             absRect      = {};
+    bool             isSpan       = false;
+    bool             paused       = false;
+    bool             muted        = false;
+    bool             fullyStopped = false;
+    float            rate         = 1.0f;
+    DWORD            pauseTick    = 0;
     std::wstring     media;
 };
 
@@ -238,8 +214,6 @@ struct EngineState {
     int   occlusionPollMs    = 150;
     int   occlusionGraceMs   = 0;
 };
-
-// ── Player helpers ─────────────────────────────────────────────────────────
 
 void applySettings(PaneRT& p) {
     if (!p.player) return;
@@ -275,11 +249,11 @@ bool startPlayer(PaneRT& p) {
 }
 
 void pausePlayer(PaneRT& p) {
-    if (!p.paused) { stopPlayer(p); p.paused = true; }  // ponytail: full teardown frees D3D surfaces (Stop() doesn't)
+    if (p.player && !p.paused) { p.player->Pause(); p.paused = true; }
 }
 
 void resumePlayer(PaneRT& p) {
-    if (p.paused) { startPlayer(p); p.paused = false; }
+    if (p.player && p.paused) { p.player->Play(); p.paused = false; }
 }
 
 void restartPlayback(PaneRT& p) {
@@ -311,7 +285,7 @@ void PlayerCB::OnMediaPlayerEvent(MFP_EVENT_HEADER* hdr) {
 
             IMFVideoDisplayControl* vdc = nullptr;
             if (SUCCEEDED(MFGetService(m_pane->player, MR_VIDEO_RENDER_SERVICE, IID_PPV_ARGS(&vdc)))) {
-                vdc->SetRenderingPrefs(MFVideoRenderPrefs_ForceOutputThrottling);  // ponytail: drops frames aggressively under GPU load
+                vdc->SetRenderingPrefs(MFVideoRenderPrefs_AllowOutputThrottling);
                 vdc->Release();
             }
 
@@ -327,8 +301,6 @@ void PlayerCB::OnMediaPlayerEvent(MFP_EVENT_HEADER* hdr) {
         default: break;
     }
 }
-
-// ── Wallpaper window ──────────────────────────────────────────────────────────
 
 LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* p = reinterpret_cast<PaneRT*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -365,8 +337,6 @@ bool registerWallpaperClass(HINSTANCE inst) {
     wc.lpszClassName = kWindowClass;
     return RegisterClassExW(&wc) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
-
-// ── Occlusion ─────────────────────────────────────────────────────────────────
 
 bool probeForeground(RECT& monRect, bool& fullscreen, bool& maximized) {
     HWND fg = GetForegroundWindow();
@@ -415,13 +385,11 @@ void updateOcclusion(EngineState* st, HWND trayHwnd) {
     if (allStopped) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     if (trayHwnd) {
-        UINT ms = allStopped ? 3000u : (UINT)st->occlusionPollMs;
+        UINT ms = (UINT)st->occlusionPollMs;
         KillTimer(trayHwnd, OCCLUSION_TIMER);
         SetTimer(trayHwnd, OCCLUSION_TIMER, ms, nullptr);
     }
 }
-
-// ── Tray ──────────────────────────────────────────────────────────────────────
 
 void showTrayMenu(HWND hwnd, EngineState* st) {
     HMENU m = CreatePopupMenu();
@@ -500,15 +468,13 @@ HWND createTray(HINSTANCE inst, EngineState* st, NOTIFYICONDATAW& nid) {
     Shell_NotifyIconW(NIM_ADD, &nid);
 
     SetTimer(hwnd, OCCLUSION_TIMER, st ? (UINT)st->occlusionPollMs : 150, nullptr);
-    SetTimer(hwnd, HOST_TIMER,  5000, nullptr);
+    SetTimer(hwnd, HOST_TIMER, 5000, nullptr);
     if (st && st->occlusionGraceMs > 0)
         SetTimer(hwnd, GRACE_TIMER, (UINT)st->occlusionGraceMs, nullptr);
     else if (st)
         st->occlusionActive = true;
     return hwnd;
 }
-
-// ── Pane build + start ────────────────────────────────────────────────────────
 
 struct Pane {
     RECT         absRect = {};
@@ -553,11 +519,6 @@ bool startPane(HINSTANCE inst, HWND host, const Pane& def, EngineState& st) {
     HWND hwnd;
 
     if (host) {
-        // Create directly as WS_CHILD of the host WorkerW.
-        // This is critical for hardware video decode: when D3D/EVR initialises the
-        // swap chain, it sees a child-window context and can use DXVA2 hardware decode.
-        // Creating as WS_POPUP and then SetParent leaves the swap chain in a popup
-        // context, forcing software decode (hence high CPU).
         POINT pt = { ax, ay };
         ScreenToClient(host, &pt);
 
@@ -569,14 +530,11 @@ bool startPane(HINSTANCE inst, HWND host, const Pane& def, EngineState& st) {
             host, nullptr, inst, nullptr);
         if (!hwnd) { logf(L"CreateWindowEx(child) failed err=%lu", GetLastError()); return false; }
 
-        // Z-order: normal path → bottom of WorkerW (icon WorkerW is a separate sibling above).
-        // Raised-desktop path → just below SHELLDLL_DefView inside Progman.
         HWND zafter = (g_raisedDesktop && g_defview && IsWindow(g_defview)) ? g_defview : HWND_BOTTOM;
         SetWindowPos(hwnd, zafter, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
         logf(L"startPane(child): hwnd=0x%p host=0x%p pt=(%d,%d) w=%d h=%d raised=%d",
              hwnd, host, pt.x, pt.y, w, h, (int)g_raisedDesktop);
     } else {
-        // No host found — float as bottom-z popup (diagnostic / last-resort mode).
         hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             kWindowClass, L"MotionCLI Wallpaper",
@@ -588,7 +546,6 @@ bool startPane(HINSTANCE inst, HWND host, const Pane& def, EngineState& st) {
         logf(L"startPane(popup/nohost): hwnd=0x%p abs=(%d,%d) w=%d h=%d", hwnd, ax, ay, w, h);
     }
 
-    // ── MFPlay setup ──────────────────────────────────────────────────────────
     st.panes.emplace_back();
     PaneRT& rt = st.panes.back();
     rt.hwnd        = hwnd;
@@ -604,7 +561,7 @@ bool startPane(HINSTANCE inst, HWND host, const Pane& def, EngineState& st) {
     rt.cb = new (std::nothrow) PlayerCB(&rt);
     if (!rt.cb) { logLine(L"PlayerCB alloc failed"); DestroyWindow(hwnd); st.panes.pop_back(); return false; }
 
-    HRESULT hr = MFPCreateMediaPlayer(nullptr, FALSE, 0, rt.cb, hwnd, &rt.player);
+    HRESULT hr = MFPCreateMediaPlayer(nullptr, FALSE, MFP_OPTION_FREE_THREADED_CALLBACK, rt.cb, hwnd, &rt.player);
     if (SUCCEEDED(hr)) hr = rt.player->CreateMediaItemFromURL(def.media.c_str(), FALSE, 0, nullptr);
     logf(L"MFPCreateMediaPlayer hr=0x%08X media=%s", (unsigned)hr, def.media.c_str());
 
@@ -627,8 +584,6 @@ void shutdownPane(PaneRT& p) {
     }
     p.hwnd = nullptr;
 }
-
-// ── Shell-user process launch ─────────────────────────────────────────────────
 
 static bool launchAsShellUser(const std::wstring& cmd, DWORD& outPid, std::string& err) {
     DWORD shellPid = 0;
@@ -682,8 +637,6 @@ fallback:
 
 } // namespace
 
-// ── Public API ────────────────────────────────────────────────────────────────
-
 int runEngineFromConfig() {
     openLog();
 
@@ -698,12 +651,12 @@ int runEngineFromConfig() {
     hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     if (FAILED(hr)) { logf(L"MFStartup hr=0x%08X", (unsigned)hr); CoUninitialize(); return 1; }
 
-    // Yield CPU scheduler priority to foreground apps; wallpaper is background work.
-    SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    timeBeginPeriod(1);
+    DwmEnableMMCSS(TRUE);
 
-    HINSTANCE inst    = GetModuleHandleW(nullptr);
-    HANDLE    stopEv  = CreateEventW(nullptr, FALSE, FALSE, kStopEventName);
+    HINSTANCE inst   = GetModuleHandleW(nullptr);
+    HANDLE    stopEv = CreateEventW(nullptr, FALSE, FALSE, kStopEventName);
 
     EngineState state;
     state.muted              = cfg.muteByDefault;
@@ -764,6 +717,8 @@ int runEngineFromConfig() {
 
     for (PaneRT& p : state.panes) shutdownPane(p);
     if (stopEv) CloseHandle(stopEv);
+    DwmEnableMMCSS(FALSE);
+    timeEndPeriod(1);
     MFShutdown();
     CoUninitialize();
     logLine(L"=== MotionCLI engine stopped ===");
