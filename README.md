@@ -42,9 +42,18 @@ One small detached process. Hardware-decoded video. No JS engine, no compositor,
 
 ## Getting Started
 
-### Download
+### Install
 
-Download the latest release from the [Releases](https://github.com/tenzo/motioncli/releases) page.
+**winget:**
+```bash
+winget install tenzo.motioncli
+```
+
+**Installer:**
+Download `motioncli-setup.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it, pick your install path, done.
+
+**Portable:**
+Download `motioncli.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it directly -- no install needed.
 
 ### Build from source
 
@@ -151,7 +160,9 @@ motioncli/
     tui/                    terminal, menus, in-console image preview
     util/                   JSON parser/serializer
   resources/                icons, .rc files
-  assets/                   sample catalog
+  installer/                NSIS installer script
+  winget/                   winget manifest files
+  public/                   release binaries
 ```
 
 ## Contributing

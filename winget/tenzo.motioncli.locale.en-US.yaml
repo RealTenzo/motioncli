@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: tenzo.motioncli
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: tenzo
+PublisherUrl: https://github.com/tenzo
+PublisherSupportUrl: https://github.com/tenzo/motioncli/issues
+Author: tenzo
+PackageName: Motion CLI
+PackageUrl: https://github.com/tenzo/motioncli
+License: MIT
+LicenseUrl: https://github.com/tenzo/motioncli/blob/main/LICENSE
+ShortDescription: Super-lightweight live wallpaper engine for Windows
+Description: >
+  Motion CLI is a keyboard-navigable terminal UI for live wallpapers on Windows.
+  No Electron, no browser. Uses Windows Media Foundation (MFPlay) for
+  hardware-decoded video rendering. Features an online library of 1000+
+  wallpapers, per-monitor support, auto-pause on fullscreen/maximized,
+  system tray integration, and auto-start on login.
+Tags:
+  - live-wallpaper
+  - desktop-customization
+  - terminal
+  - cli
+  - windows
+  - lightweight
+Moniker: motioncli
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
