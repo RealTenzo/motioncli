@@ -25,6 +25,8 @@ public:
     bool pauseOnBattery = false;
     bool lowEndMode = false;
     int occlusionTimeoutSec = 0;
+    int occlusionPollMs = 150;
+    int occlusionGraceMs = 0;
 
     double playbackSpeed = 1.0;
 

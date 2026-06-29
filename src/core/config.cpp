@@ -170,6 +170,10 @@ Config Config::load() {
         cfg.lowEndMode         = j["lowEndMode"].asBool(false);
         cfg.occlusionTimeoutSec = j["occlusionTimeoutSec"].asInt(0);
         if (cfg.occlusionTimeoutSec < 0 || cfg.occlusionTimeoutSec > 300) cfg.occlusionTimeoutSec = 0;
+        cfg.occlusionPollMs    = j["occlusionPollMs"].asInt(150);
+        if (cfg.occlusionPollMs < 50 || cfg.occlusionPollMs > 5000) cfg.occlusionPollMs = 150;
+        cfg.occlusionGraceMs   = j["occlusionGraceMs"].asInt(0);
+        if (cfg.occlusionGraceMs < 0 || cfg.occlusionGraceMs > 10000) cfg.occlusionGraceMs = 0;
         cfg.playbackSpeed      = j["playbackSpeed"].asNumber(1.0);
         if (cfg.playbackSpeed < 0.25 || cfg.playbackSpeed > 4.0) cfg.playbackSpeed = 1.0;
         cfg.moeCategory        = j["moeCategory"].asString("");
@@ -225,6 +229,8 @@ void Config::save() const {
     j.set("pauseOnBattery",     Json::makeBool(pauseOnBattery));
     j.set("lowEndMode",         Json::makeBool(lowEndMode));
     j.set("occlusionTimeoutSec", Json::makeNumber((double)occlusionTimeoutSec));
+    j.set("occlusionPollMs",    Json::makeNumber((double)occlusionPollMs));
+    j.set("occlusionGraceMs",   Json::makeNumber((double)occlusionGraceMs));
     j.set("playbackSpeed",      Json::makeNumber(playbackSpeed));
     j.set("moeCategory",        Json::makeString(moeCategory));
     j.set("libraryCount",       Json::makeNumber((double)libraryCount));
