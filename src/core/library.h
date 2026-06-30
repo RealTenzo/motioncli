@@ -34,13 +34,13 @@ public:
                        int maxItems, std::string& err);
     bool resolve(Wallpaper& w, std::string& err);
 
-    std::vector<Wallpaper> savedWallpapers();
+    const std::vector<Wallpaper>& savedWallpapers();
 
     void loadBuiltin();
     void loadLocalLibrary();
 
-    const std::vector<Wallpaper>& items() const { return m_items; }
-    bool empty() const { return m_items.empty(); }
+    const std::vector<const Wallpaper*>& items() const { return m_merged; }
+    bool empty() const { return m_catalog.empty() && m_local.empty(); }
 
     bool importFile(const std::wstring& srcPath, std::string& outId, std::string& err);
     bool removeLocal(const std::string& id);
@@ -57,11 +57,12 @@ public:
 
 private:
     void rebuild();
+    void scanFileSystem();
     void saveLocalLibrary();
 
     std::vector<Wallpaper> m_catalog;
     std::vector<Wallpaper> m_local;
-    std::vector<Wallpaper> m_items;
+    std::vector<const Wallpaper*> m_merged;
 };
 
 }

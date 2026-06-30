@@ -46,7 +46,8 @@ bool renderImage(const std::wstring& path, int maxCols, int maxRows, std::string
                         SUCCEEDED(conv->Initialize(scaler, GUID_WICPixelFormat32bppBGRA,
                                       WICBitmapDitherTypeNone, nullptr, 0.0,
                                       WICBitmapPaletteTypeCustom))) {
-                        std::vector<unsigned char> px((size_t)pw * ph * 4);
+                        static std::vector<unsigned char> px;
+                        px.resize((size_t)pw * ph * 4);
                         if (SUCCEEDED(conv->CopyPixels(nullptr, pw * 4,
                                           (UINT)px.size(), px.data()))) {
                             char buf[64];

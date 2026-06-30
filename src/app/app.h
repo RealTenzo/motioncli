@@ -23,7 +23,7 @@ private:
     void help();
     void browseLibrary();
     void myWallpapers();
-    void wallpaperDetail(Wallpaper w);
+    void wallpaperDetail(const Wallpaper& w);
     void previewWallpaper(const Wallpaper& w);
     void deleteWallpaper(const Wallpaper& w);
     void importWallpaper();

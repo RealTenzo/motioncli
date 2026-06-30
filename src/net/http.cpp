@@ -55,6 +55,13 @@ struct OpenedRequest {
     HINTERNET request = nullptr;
     bool ok = false;
 
+    ~OpenedRequest() { close(); }
+    OpenedRequest() = default;
+    OpenedRequest(OpenedRequest&& o) noexcept : session(o.session), connect(o.connect), request(o.request), ok(o.ok) { o.session = o.connect = o.request = nullptr; o.ok = false; }
+    OpenedRequest& operator=(OpenedRequest&& o) noexcept { if (this != &o) { close(); session = o.session; connect = o.connect; request = o.request; ok = o.ok; o.session = o.connect = o.request = nullptr; o.ok = false; } return *this; }
+    OpenedRequest(const OpenedRequest&) = delete;
+    OpenedRequest& operator=(const OpenedRequest&) = delete;
+
     void close() {
         if (request) WinHttpCloseHandle(request);
         if (connect) WinHttpCloseHandle(connect);
@@ -137,26 +144,28 @@ bool getString(const std::wstring& url, std::string& outBody, std::string& err,
 
     outBody.clear();
     DWORD avail = 0;
+    std::vector<char> chunk;
     do {
         avail = 0;
         if (!WinHttpQueryDataAvailable(r.request, &avail)) {
             err = lastError("WinHttpQueryDataAvailable");
-            r.close();
             return false;
         }
         if (avail == 0) break;
 
-        std::vector<char> chunk(avail);
+        chunk.resize(avail);
         DWORD read = 0;
         if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
             err = lastError("WinHttpReadData");
-            r.close();
             return false;
         }
         outBody.append(chunk.data(), read);
+        if (outBody.size() > 1024 * 1024) {
+            err = "Response too large";
+            return false;
+        }
     } while (avail > 0);
 
-    r.close();
     return true;
 }
 
@@ -180,6 +189,7 @@ bool downloadFile(const std::wstring& url,
     unsigned long long received = 0;
     DWORD avail = 0;
     bool success = true;
+    std::vector<char> chunk;
 
     do {
         avail = 0;
@@ -190,10 +200,17 @@ bool downloadFile(const std::wstring& url,
         }
         if (avail == 0) break;
 
-        std::vector<char> chunk(avail);
+        chunk.resize(avail);
         DWORD read = 0;
         if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
             err = lastError("WinHttpReadData");
+            success = false;
+            break;
+        }
+
+        received += read;
+        if (received > 1024 * 1024) {
+            err = "Response too large";
             success = false;
             break;
         }
@@ -205,12 +222,10 @@ bool downloadFile(const std::wstring& url,
             break;
         }
 
-        received += read;
         if (onProgress) onProgress(received, total);
     } while (avail > 0);
 
     CloseHandle(file);
-    r.close();
 
     if (!success) DeleteFileW(destPath.c_str());
     return success;

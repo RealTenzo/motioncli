@@ -121,12 +121,13 @@ struct Parser {
         }
     }
 
-    Json parseValue() {
+    Json parseValue(int depth) {
+        if (depth >= Json::kMaxDepth) fail("JSON nesting too deep");
         skipWs();
         char c = peek();
         switch (c) {
-            case '{': return parseObject();
-            case '[': return parseArray();
+            case '{': return parseObject(depth + 1);
+            case '[': return parseArray(depth + 1);
             case '"': { Json j; j.type = Json::Type::String; j.str = parseString(); return j; }
             case 't': { expectLiteral("true");  return Json::makeBool(true); }
             case 'f': { expectLiteral("false"); return Json::makeBool(false); }
@@ -135,7 +136,7 @@ struct Parser {
         }
     }
 
-    Json parseObject() {
+    Json parseObject(int depth) {
         Json obj = Json::makeObject();
         ++p;
         skipWs();
@@ -146,7 +147,7 @@ struct Parser {
             skipWs();
             if (peek() != ':') fail("expected ':'");
             ++p;
-            obj.object[key] = parseValue();
+            obj.object[key] = parseValue(depth);
             skipWs();
             char c = peek();
             if (c == ',') { ++p; continue; }
@@ -156,13 +157,13 @@ struct Parser {
         return obj;
     }
 
-    Json parseArray() {
+    Json parseArray(int depth) {
         Json arr = Json::makeArray();
         ++p;
         skipWs();
         if (p < end && *p == ']') { ++p; return arr; }
         while (true) {
-            arr.array.push_back(parseValue());
+            arr.array.push_back(parseValue(depth));
             skipWs();
             char c = peek();
             if (c == ',') { ++p; continue; }
@@ -198,6 +199,7 @@ void escapeTo(const std::string& s, std::string& out) {
 }
 
 void dumpTo(const Json& v, std::string& out, int indent, int depth) {
+    if (depth >= Json::kMaxDepth) throw std::runtime_error("JSON nesting too deep");
     auto pad = [&](int d) {
         if (indent > 0) { out.push_back('\n'); out.append((size_t)indent * d, ' '); }
     };
@@ -253,7 +255,7 @@ void dumpTo(const Json& v, std::string& out, int indent, int depth) {
 
 Json Json::parse(const std::string& text) {
     Parser parser(text);
-    Json result = parser.parseValue();
+    Json result = parser.parseValue(0);
     parser.skipWs();
     if (parser.p != parser.end)
         throw std::runtime_error("JSON parse error: trailing characters after value");

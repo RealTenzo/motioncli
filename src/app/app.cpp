@@ -4,6 +4,7 @@
 #include "tui/image.h"
 #include "core/autostart.h"
 #include "net/http.h"
+#include "util/str.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -22,24 +23,6 @@ namespace motion {
 using namespace tui;
 
 namespace {
-
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring out(len, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
-    return out;
-}
-
-std::string narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                                  nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                        out.data(), len, nullptr, nullptr);
-    return out;
-}
 
 std::string joinTags(const std::vector<std::string>& tags) {
     std::string out;
@@ -272,12 +255,12 @@ int App::pickWallpaper(const std::string& title, const std::string& subtitle) {
 
     Menu menu(m_term, title, subtitle);
     std::vector<MenuItem> items;
-    for (const Wallpaper& w : m_library.items()) {
+    for (const Wallpaper* w : m_library.items()) {
         std::string hint;
-        if (w.isLocal) hint = "local";
-        if (Library::isDownloaded(w)) hint += (hint.empty() ? "" : "  ") + std::string("✓");
-        if (!w.resolution.empty()) hint += (hint.empty() ? "" : "  ") + w.resolution;
-        items.push_back({ w.title, hint });
+        if (w->isLocal) hint = "local";
+        if (Library::isDownloaded(*w)) hint += (hint.empty() ? "" : "  ") + std::string("✓");
+        if (!w->resolution.empty()) hint += (hint.empty() ? "" : "  ") + w->resolution;
+        items.push_back({ w->title, hint });
     }
     menu.setItems(items);
     menu.setFooter("↑/↓ move   ⏎ select   esc back");
@@ -311,11 +294,11 @@ void App::browseLibrary() {
 
         Menu menu(m_term, "Browse Library", sub);
         std::vector<MenuItem> items;
-        for (const Wallpaper& w : m_library.items()) {
+        for (const Wallpaper* w : m_library.items()) {
             std::string hint;
-            if (w.isLocal) hint = "local";
-            else if (Library::isDownloaded(w)) hint = "✓ cached";
-            items.push_back({ w.title, hint });
+            if (w->isLocal) hint = "local";
+            else if (Library::isDownloaded(*w)) hint = "✓ cached";
+            items.push_back({ w->title, hint });
         }
         const int loadMoreIdx = (int)items.size();
         items.push_back({ "▼ Load more", "" });
@@ -365,13 +348,13 @@ void App::browseLibrary() {
         }
 
         selected = choice;
-        wallpaperDetail(m_library.items()[choice]);
+        wallpaperDetail(*m_library.items()[choice]);
     }
 }
 
 void App::myWallpapers() {
     while (true) {
-        std::vector<Wallpaper> saved = m_library.savedWallpapers();
+        const std::vector<Wallpaper>& saved = m_library.savedWallpapers();
 
         Menu menu(m_term, "My Wallpapers",
                   saved.empty() ? "Nothing yet — import a video or download one from Browse."
@@ -414,43 +397,44 @@ void App::deleteWallpaper(const Wallpaper& w) {
     notify("My Wallpapers", { { color::yellow, "Deleted \"" + w.title + "\"." } });
 }
 
-void App::wallpaperDetail(Wallpaper w) {
-    if (w.url.empty() && !w.sourceUrl.empty()) {
+void App::wallpaperDetail(const Wallpaper& w) {
+    Wallpaper wr = w;
+    if (wr.url.empty() && !wr.sourceUrl.empty()) {
         Frame f;
         draw::banner(f);
         draw::title(f, "Loading…");
-        f.line(std::string(color::gray) + "  Fetching " + w.title + "…" + color::reset);
+        f.line(std::string(color::gray) + "  Fetching " + wr.title + "…" + color::reset);
         m_term.present(f);
         std::string err;
-        if (!m_library.resolve(w, err)) {
+        if (!m_library.resolve(wr, err)) {
             notify("Library", { { color::red, "Couldn't open this wallpaper:" },
                                 { color::gray, "  " + err } });
             return;
         }
     }
 
-    const bool cached = Library::isDownloaded(w);
+    const bool cached = Library::isDownloaded(wr);
 
     auto line = [](const std::string& label, const std::string& value) {
         return value.empty() ? std::string() : "\r\n  " + label + ": " + value;
     };
     std::string detail;
-    detail += line("Author", w.author);
-    detail += line("Resolution", w.resolution);
-    detail += line("Tags", joinTags(w.tags));
-    if (w.sizeMb > 0) detail += line("Size", std::to_string(w.sizeMb) + " MB");
+    detail += line("Author", wr.author);
+    detail += line("Resolution", wr.resolution);
+    detail += line("Tags", joinTags(wr.tags));
+    if (wr.sizeMb > 0) detail += line("Size", std::to_string(wr.sizeMb) + " MB");
     detail += line("Status", cached ? "✓ ready" : "not downloaded");
 
-    const bool canPreview = !w.previewVideo.empty() || !w.preview.empty();
+    const bool canPreview = !wr.previewVideo.empty() || !wr.preview.empty();
 
-    Menu actions(m_term, "Wallpaper · " + w.title, detail);
+    Menu actions(m_term, "Wallpaper · " + wr.title, detail);
     std::vector<MenuItem> items = {
         { cached ? "Apply (whole desktop)" : "Download & apply", "" },
     };
     if (canPreview) items.push_back({ "Preview", "in console · b for browser" });
     items.push_back({ "Assign to a monitor…", "" });
     items.push_back({ "Export a copy…", "" });
-    if (w.isLocal) items.push_back({ "Delete", "" });
+    if (wr.isLocal) items.push_back({ "Delete", "" });
     items.push_back({ "Back", "" });
     actions.setItems(items);
     actions.setFooter("↑/↓ move   ⏎ select   esc back");
@@ -458,14 +442,14 @@ void App::wallpaperDetail(Wallpaper w) {
     const int previewIndex = canPreview ? 1 : -1;
     const int assignIndex  = canPreview ? 2 : 1;
     const int exportIndex  = canPreview ? 3 : 2;
-    const int deleteIndex  = w.isLocal ? exportIndex + 1 : -1;
+    const int deleteIndex  = wr.isLocal ? exportIndex + 1 : -1;
 
     int choice = actions.run();
-    if (choice == 0)                  applyWallpaper(w);
-    else if (choice == previewIndex)  previewWallpaper(w);
-    else if (choice == assignIndex)   assignToMonitor(w);
-    else if (choice == exportIndex)   exportWallpaper(w);
-    else if (choice == deleteIndex)   deleteWallpaper(w);
+    if (choice == 0)                  applyWallpaper(wr);
+    else if (choice == previewIndex)  previewWallpaper(wr);
+    else if (choice == assignIndex)   assignToMonitor(wr);
+    else if (choice == exportIndex)   exportWallpaper(wr);
+    else if (choice == deleteIndex)   deleteWallpaper(wr);
 }
 
 void App::previewWallpaper(const Wallpaper& w) {
@@ -647,8 +631,8 @@ void App::importWallpaper() {
     }
 
     const Wallpaper* added = nullptr;
-    for (const Wallpaper& w : m_library.items())
-        if (w.id == id) { added = &w; break; }
+    for (const Wallpaper* w : m_library.items())
+        if (w->id == id) { added = w; break; }
     if (!added) {
         notify("Import", { { color::green, "✓ Added to your library." } });
         return;
@@ -717,7 +701,7 @@ void App::perMonitorSetup() {
                                "It will be downloaded if needed");
         if (wi < 0 || wi >= (int)m_library.items().size()) continue;
 
-        Wallpaper w = m_library.items()[wi];
+        Wallpaper w = *m_library.items()[wi];
         std::wstring path;
         if (!prepareMedia(w, path)) continue;
 

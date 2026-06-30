@@ -7,6 +7,7 @@ namespace motion {
 
 class Json {
 public:
+    static constexpr int kMaxDepth = 256;
     enum class Type { Null, Bool, Number, String, Array, Object };
 
     Type type = Type::Null;

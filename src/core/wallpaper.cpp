@@ -227,7 +227,10 @@ void stopPlayer(PaneRT& p) {
     p.player->Shutdown();
     p.player->Release();
     p.player = nullptr;
-    if (p.cb) { p.cb->Release(); p.cb = nullptr; }
+    if (PlayerCB* cb = p.cb) {
+        p.cb = nullptr;
+        cb->Release();
+    }
     p.fullyStopped = true;
 }
 
