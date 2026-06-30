@@ -209,11 +209,6 @@ bool downloadFile(const std::wstring& url,
         }
 
         received += read;
-        if (received > 1024 * 1024) {
-            err = "Response too large";
-            success = false;
-            break;
-        }
 
         DWORD written = 0;
         if (!WriteFile(file, chunk.data(), read, &written, nullptr) || written != read) {

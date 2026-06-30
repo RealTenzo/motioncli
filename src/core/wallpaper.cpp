@@ -202,17 +202,17 @@ struct PaneRT {
 struct EngineState {
     std::vector<PaneRT> panes;
     HWND  host               = nullptr;
+    float playbackSpeed      = 1.0f;
+    int   occlusionTimeoutSec= 0;
+    int   occlusionPollMs    = 150;
+    int   occlusionGraceMs   = 0;
     bool  muted              = false;
     bool  pauseOnFullscreen  = true;
     bool  pauseWhenMaximized = true;
     bool  pauseUnlessDesktop = false;
     bool  pauseOnBattery     = false;
     bool  lowEndMode         = false;
-    float playbackSpeed      = 1.0f;
     bool  occlusionActive    = false;
-    int   occlusionTimeoutSec= 0;
-    int   occlusionPollMs    = 150;
-    int   occlusionGraceMs   = 0;
 };
 
 void applySettings(PaneRT& p) {
