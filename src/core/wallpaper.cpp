@@ -1,6 +1,7 @@
 #include "core/wallpaper.h"
 #include "core/config.h"
 #include "core/monitors.h"
+#include "util/str.h"
 #include "resource.h"
 
 #include <windows.h>
@@ -70,10 +71,7 @@ void openLog() {
     logLine(L"=== MotionCLI engine started ===");
 }
 
-bool fileExists(const std::wstring& p) {
-    DWORD a = GetFileAttributesW(p.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
+using motion::fileExists;
 
 std::wstring exePath() {
     wchar_t buf[MAX_PATH] = {};
@@ -202,17 +200,17 @@ struct PaneRT {
 struct EngineState {
     std::vector<PaneRT> panes;
     HWND  host               = nullptr;
+    float playbackSpeed      = 1.0f;
+    int   occlusionTimeoutSec= 0;
+    int   occlusionPollMs    = 150;
+    int   occlusionGraceMs   = 0;
     bool  muted              = false;
     bool  pauseOnFullscreen  = true;
     bool  pauseWhenMaximized = true;
     bool  pauseUnlessDesktop = false;
     bool  pauseOnBattery     = false;
     bool  lowEndMode         = false;
-    float playbackSpeed      = 1.0f;
     bool  occlusionActive    = false;
-    int   occlusionTimeoutSec= 0;
-    int   occlusionPollMs    = 150;
-    int   occlusionGraceMs   = 0;
 };
 
 void applySettings(PaneRT& p) {
@@ -227,7 +225,10 @@ void stopPlayer(PaneRT& p) {
     p.player->Shutdown();
     p.player->Release();
     p.player = nullptr;
-    if (p.cb) { p.cb->Release(); p.cb = nullptr; }
+    if (PlayerCB* cb = p.cb) {
+        p.cb = nullptr;
+        cb->Release();
+    }
     p.fullyStopped = true;
 }
 

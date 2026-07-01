@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <vector>
 
+#pragma comment(lib, "winhttp.lib")
+
 namespace motion::http {
 
 namespace {
@@ -54,6 +56,13 @@ struct OpenedRequest {
     HINTERNET connect = nullptr;
     HINTERNET request = nullptr;
     bool ok = false;
+
+    ~OpenedRequest() { close(); }
+    OpenedRequest() = default;
+    OpenedRequest(OpenedRequest&& o) noexcept : session(o.session), connect(o.connect), request(o.request), ok(o.ok) { o.session = o.connect = o.request = nullptr; o.ok = false; }
+    OpenedRequest& operator=(OpenedRequest&& o) noexcept { if (this != &o) { close(); session = o.session; connect = o.connect; request = o.request; ok = o.ok; o.session = o.connect = o.request = nullptr; o.ok = false; } return *this; }
+    OpenedRequest(const OpenedRequest&) = delete;
+    OpenedRequest& operator=(const OpenedRequest&) = delete;
 
     void close() {
         if (request) WinHttpCloseHandle(request);
@@ -137,32 +146,35 @@ bool getString(const std::wstring& url, std::string& outBody, std::string& err,
 
     outBody.clear();
     DWORD avail = 0;
+    std::vector<char> chunk;
     do {
         avail = 0;
         if (!WinHttpQueryDataAvailable(r.request, &avail)) {
             err = lastError("WinHttpQueryDataAvailable");
-            r.close();
             return false;
         }
         if (avail == 0) break;
 
-        std::vector<char> chunk(avail);
+        chunk.resize(avail);
         DWORD read = 0;
         if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
             err = lastError("WinHttpReadData");
-            r.close();
+            return false;
+        }
+        if (outBody.size() + read > 1024 * 1024) {
+            err = "Response too large";
             return false;
         }
         outBody.append(chunk.data(), read);
     } while (avail > 0);
 
-    r.close();
     return true;
 }
 
 bool downloadFile(const std::wstring& url,
                   const std::wstring& destPath,
-                  const std::function<void(unsigned long long, unsigned long long)>& onProgress,
+                  ProgressFn onProgress,
+                  void* progressCtx,
                   std::string& err) {
     OpenedRequest r = openGet(url, err);
     if (!r.ok) return false;
@@ -180,6 +192,7 @@ bool downloadFile(const std::wstring& url,
     unsigned long long received = 0;
     DWORD avail = 0;
     bool success = true;
+    std::vector<char> chunk;
 
     do {
         avail = 0;
@@ -190,13 +203,15 @@ bool downloadFile(const std::wstring& url,
         }
         if (avail == 0) break;
 
-        std::vector<char> chunk(avail);
+        chunk.resize(avail);
         DWORD read = 0;
         if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
             err = lastError("WinHttpReadData");
             success = false;
             break;
         }
+
+        received += read;
 
         DWORD written = 0;
         if (!WriteFile(file, chunk.data(), read, &written, nullptr) || written != read) {
@@ -205,15 +220,49 @@ bool downloadFile(const std::wstring& url,
             break;
         }
 
-        received += read;
-        if (onProgress) onProgress(received, total);
+        if (onProgress) onProgress(received, total, progressCtx);
     } while (avail > 0);
 
     CloseHandle(file);
-    r.close();
 
     if (!success) DeleteFileW(destPath.c_str());
     return success;
+}
+
+bool getBytes(const std::wstring& url, std::vector<unsigned char>& out,
+              std::string& err, const std::wstring& extraHeaders,
+              unsigned long long maxSize) {
+    OpenedRequest r = openGet(url, err, extraHeaders);
+    if (!r.ok) return false;
+
+    out.clear();
+    DWORD avail = 0;
+    std::vector<char> chunk;
+    do {
+        avail = 0;
+        if (!WinHttpQueryDataAvailable(r.request, &avail)) {
+            err = lastError("WinHttpQueryDataAvailable");
+            return false;
+        }
+        if (avail == 0) break;
+
+        if (maxSize && out.size() + avail > maxSize) {
+            err = "Response too large";
+            return false;
+        }
+
+        chunk.resize(avail);
+        DWORD read = 0;
+        if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
+            err = lastError("WinHttpReadData");
+            return false;
+        }
+        size_t pos = out.size();
+        out.resize(pos + read);
+        memcpy(out.data() + pos, chunk.data(), read);
+    } while (avail > 0);
+
+    return true;
 }
 
 }

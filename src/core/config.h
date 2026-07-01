@@ -12,32 +12,28 @@ public:
     std::wstring catalogUrl =
         L"https://raw.githubusercontent.com/tenzo/motioncli/main/assets/catalog.sample.json";
     std::wstring pexelsApiKey;
+    std::map<std::string, std::wstring> monitorAssignments;
 
-    bool muteByDefault = false;
-    bool firstRun = true;
+    std::string  currentWallpaperId;
+    std::wstring currentMediaPath;
+    std::string moeCategory;
+    double playbackSpeed = 1.0;
 
     WallpaperMode mode = WallpaperMode::Span;
     Quality quality = Quality::Auto;
+    int occlusionTimeoutSec = 0;
+    int occlusionPollMs = 150;
+    int occlusionGraceMs = 0;
+    int libraryCount = 24;
+    unsigned long enginePid = 0;
 
+    bool muteByDefault = false;
+    bool firstRun = true;
     bool pauseOnFullscreen = true;
     bool pauseWhenMaximized = true;
     bool pauseUnlessDesktop = false;
     bool pauseOnBattery = false;
     bool lowEndMode = false;
-    int occlusionTimeoutSec = 0;
-    int occlusionPollMs = 150;
-    int occlusionGraceMs = 0;
-
-    double playbackSpeed = 1.0;
-
-    std::string moeCategory;
-    int libraryCount = 24;
-
-    std::string  currentWallpaperId;
-    std::wstring currentMediaPath;
-    unsigned long enginePid = 0;
-
-    std::map<std::string, std::wstring> monitorAssignments;
 
     static Config load();
     void save() const;

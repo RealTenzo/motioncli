@@ -1,50 +1,26 @@
 #include "core/steam.h"
 #include "net/http.h"
+#include "util/str.h"
 
 #include <windows.h>
 #include <cstring>
+#include <string_view>
 
 namespace motion::steam {
 
 namespace {
 
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring out(len, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
-    return out;
-}
+using motion::htmlDecode;
+using motion::trim;
 
-std::string htmlDecode(const std::string& s) {
-    std::string out;
-    for (size_t i = 0; i < s.size();) {
-        if (s[i] == '&') {
-            if (s.compare(i, 5, "&amp;") == 0)      { out.push_back('&');  i += 5; continue; }
-            if (s.compare(i, 4, "&lt;") == 0)       { out.push_back('<');  i += 4; continue; }
-            if (s.compare(i, 4, "&gt;") == 0)       { out.push_back('>');  i += 4; continue; }
-            if (s.compare(i, 6, "&quot;") == 0)     { out.push_back('"');  i += 6; continue; }
-            if (s.compare(i, 5, "&#39;") == 0)      { out.push_back('\''); i += 5; continue; }
-        }
-        out.push_back(s[i++]);
-    }
-    return out;
-}
-
-std::string trim(const std::string& s) {
-    size_t a = s.find_first_not_of(" \t\r\n");
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-}
-
-std::string attrAfter(const std::string& html, size_t from, const char* key) {
+std::string_view attrAfter(const std::string& html, size_t from, const char* key) {
     size_t k = html.find(key, from);
     if (k == std::string::npos) return {};
     size_t q = html.find('"', k + strlen(key) - 1);
     if (q == std::string::npos) return {};
     size_t e = html.find('"', q + 1);
     if (e == std::string::npos) return {};
-    return html.substr(q + 1, e - q - 1);
+    return std::string_view(html).substr(q + 1, e - q - 1);
 }
 
 std::string digitsAfter(const std::string& html, size_t pos) {
@@ -71,10 +47,10 @@ bool fetchTrending(const std::string& sort, std::vector<Item>& out, std::string&
         for (const Item& it : out) if (it.id == id) return true;
         return false;
     };
-    auto quoted = [&](size_t q) {
+    auto quoted = [&](size_t q) -> std::string_view {
         q += 5;
         size_t e = html.find('"', q);
-        return e == std::string::npos ? std::string() : html.substr(q, e - q);
+        return e == std::string::npos ? std::string_view() : std::string_view(html).substr(q, e - q);
     };
 
     while ((p = html.find(key, p)) != std::string::npos) {
@@ -92,13 +68,13 @@ bool fetchTrending(const std::string& sort, std::vector<Item>& out, std::string&
         if (sp == std::string::npos || ap == std::string::npos || sp > winEnd || ap > winEnd)
             continue;
 
-        std::string title = trim(htmlDecode(quoted(ap)));
+        std::string title = trim(htmlDecode(std::string(quoted(ap))));
         if (title.empty()) continue;
 
         Item item;
         item.id = id;
         item.title = title;
-        item.preview = quoted(sp);
+        item.preview = std::string(quoted(sp));
         item.author = "Steam Workshop";
         out.push_back(std::move(item));
         if (out.size() >= 60) break;
@@ -116,7 +92,7 @@ bool resolveVideoUrl(const std::string& id, std::wstring& outUrl, std::string& e
     const char* keys[] = { "data-mp4-hd-source=\"", "data-mp4-source=\"",
                            "og:video:secure_url\" content=\"", "og:video\" content=\"" };
     for (const char* k : keys) {
-        std::string v = attrAfter(html, 0, k);
+        std::string_view v = attrAfter(html, 0, k);
         if (v.find(".mp4") != std::string::npos) {
             std::string clean;
             for (size_t i = 0; i < v.size(); ++i) {
