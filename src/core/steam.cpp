@@ -10,26 +10,8 @@ namespace motion::steam {
 
 namespace {
 
-std::string htmlDecode(const std::string& s) {
-    std::string out;
-    for (size_t i = 0; i < s.size();) {
-        if (s[i] == '&') {
-            if (s.compare(i, 5, "&amp;") == 0)      { out.push_back('&');  i += 5; continue; }
-            if (s.compare(i, 4, "&lt;") == 0)       { out.push_back('<');  i += 4; continue; }
-            if (s.compare(i, 4, "&gt;") == 0)       { out.push_back('>');  i += 4; continue; }
-            if (s.compare(i, 6, "&quot;") == 0)     { out.push_back('"');  i += 6; continue; }
-            if (s.compare(i, 5, "&#39;") == 0)      { out.push_back('\''); i += 5; continue; }
-        }
-        out.push_back(s[i++]);
-    }
-    return out;
-}
-
-std::string trim(const std::string& s) {
-    size_t a = s.find_first_not_of(" \t\r\n");
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-}
+using motion::htmlDecode;
+using motion::trim;
 
 std::string_view attrAfter(const std::string& html, size_t from, const char* key) {
     size_t k = html.find(key, from);

@@ -8,13 +8,18 @@
 namespace motion::tui {
 
 Frame& Frame::line(const std::string& s) {
-    m_buf += s;
-    m_buf += "\x1b[K\r\n";
+    m_buf.append(s);
+    m_buf.append("\x1b[K\r\n");
     return *this;
 }
 
 Frame& Frame::raw(const std::string& s) {
-    m_buf += s;
+    m_buf.append(s);
+    return *this;
+}
+
+Frame& Frame::write(char c) {
+    m_buf.push_back(c);
     return *this;
 }
 
@@ -43,12 +48,12 @@ Terminal::~Terminal() {
 }
 
 void Terminal::present(const Frame& frame) const {
-    std::string out;
+    static std::string out;
+    out.clear();
     out.reserve(frame.str().size() + 24);
-    out += "\x1b[?25l";
-    out += "\x1b[H";
-    out += frame.str();
-    out += "\x1b[0J";
+    out.append("\x1b[?25l\x1b[H");
+    out.append(frame.str());
+    out.append("\x1b[0J");
     write(out);
 }
 
@@ -126,7 +131,8 @@ std::string Terminal::readLineAt(int row, int col, const std::string& initial) c
             }
         } else if (ev.key == Key::Char && (unsigned char)ev.ch >= 0x20) {
             buffer.push_back(ev.ch);
-            write(std::string(1, ev.ch));
+            char tmp[2] = { ev.ch, 0 };
+            write(tmp);
         }
     }
 

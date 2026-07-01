@@ -497,13 +497,10 @@ void App::previewWallpaper(const Wallpaper& w) {
             if (cols < 24) cols = 24;
             if (rows < 8)  rows = 8;
         }
-        wchar_t tp[MAX_PATH] = {0};
-        GetTempPathW(MAX_PATH, tp);
-        std::wstring tmp(tp);
-        tmp.append(L"motioncli_preview.jpg");
+        std::vector<unsigned char> raw;
         std::string err;
-        if (http::downloadFile(widen(w.preview), tmp, nullptr, err))
-            tui::renderImage(tmp, cols, rows, img);
+        if (http::getBytes(widen(w.preview), raw, err))
+            tui::renderImageFromMemory(raw, cols, rows, img);
     }
 
     const std::string& browseTarget = !w.previewVideo.empty() ? w.previewVideo : w.preview;
@@ -528,6 +525,13 @@ void App::previewWallpaper(const Wallpaper& w) {
 }
 
 bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
+    struct Ctx {
+        const Wallpaper* w;
+        int lastPct;
+        App* app;
+    };
+    Ctx ctx{ &w, -2, this };
+
     auto progressFrame = [&](const std::string& statusLine) {
         Frame f;
         draw::banner(f);
@@ -540,19 +544,30 @@ bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
         m_term.present(f);
     };
 
-    int lastPct = -2;
-    auto onProgress = [&](int pct) {
-        if (pct == lastPct) return;
-        lastPct = pct;
+    auto onProgress = +[](int pct, void* vctx) {
+        auto* c = (Ctx*)vctx;
+        if (pct == c->lastPct) return;
+        c->lastPct = pct;
+        auto pf = [&](const std::string& sl) {
+            Frame f;
+            draw::banner(f);
+            std::string pt2;
+            pt2.reserve(14 + c->w->title.size());
+            pt2.append("Preparing · ").append(c->w->title);
+            draw::title(f, pt2);
+            f.line();
+            f.raw("  ").raw(sl).line();
+            c->app->m_term.present(f);
+        };
         if (pct < 0) {
-            progressFrame(std::string(color::cyan).append("Downloading…").append(color::reset));
+            pf(std::string(color::cyan).append("Downloading…").append(color::reset));
         } else {
             int filled = pct / 5;
             std::string bar(filled, '#');
             bar.append(20 - filled, '.');
             char buf[96];
             _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Downloading  [%s] %3d%%", bar.c_str(), pct);
-            progressFrame(std::string(color::cyan).append(buf).append(color::reset));
+            pf(std::string(color::cyan).append(buf).append(color::reset));
         }
     };
 
@@ -560,7 +575,7 @@ bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
         progressFrame(std::string(color::gray).append("Starting…").append(color::reset));
 
     std::string err;
-    if (!m_library.ensureDownloaded(w, onProgress, outPath, err)) {
+    if (!m_library.ensureDownloaded(w, onProgress, &ctx, outPath, err)) {
         notify("Download failed", { { color::red, err } });
         return false;
     }

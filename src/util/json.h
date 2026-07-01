@@ -1,7 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <map>
+#include <utility>
 
 namespace motion {
 
@@ -15,7 +15,7 @@ public:
     double number  = 0.0;
     std::string str;
     std::vector<Json> array;
-    std::map<std::string, Json> object;
+    std::vector<std::pair<std::string, Json>> object;
 
     Json() = default;
 
@@ -38,10 +38,22 @@ public:
     int         asInt(int def = 0)                    const { return type == Type::Number ? (int)number : def; }
     bool        asBool(bool def = false)              const { return type == Type::Bool ? boolean : def; }
 
-    void set(const std::string& key, Json value) { type = Type::Object; object[key] = std::move(value); }
+    void set(const std::string& key, Json value);
+    void sortObject();
+
+    static void setError(const char* msg);
 
     static Json parse(const std::string& text);
+    static const char* lastError();
+
     std::string dump(int indent = 2) const;
+
+private:
+    static thread_local const char* s_lastError;
 };
 
+}
+
+inline bool operator<(const std::pair<std::string, motion::Json>& a, const std::string& b) {
+    return a.first < b;
 }

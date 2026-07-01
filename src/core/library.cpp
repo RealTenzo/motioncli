@@ -14,6 +14,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <algorithm>
 
 namespace motion {
 
@@ -34,10 +35,7 @@ std::wstring extensionFor(const std::string& url) {
     return L".mp4";
 }
 
-bool fileExists(const std::wstring& path) {
-    DWORD attr = GetFileAttributesW(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-}
+using motion::fileExists;
 
 std::string sanitize(const std::string& s) {
     std::string out;
@@ -53,11 +51,9 @@ std::string sanitize(const std::string& s) {
 }
 
 bool parseCatalog(const std::string& body, std::vector<Wallpaper>& out, std::string& err) {
-    Json root;
-    try {
-        root = Json::parse(body);
-    } catch (const std::exception& e) {
-        err = std::string("Invalid catalog JSON: ") + e.what();
+    Json root = Json::parse(body);
+    if (root.isNull()) {
+        err = std::string("Invalid catalog JSON: ") + Json::lastError();
         return false;
     }
 
@@ -139,23 +135,7 @@ bool Library::fetch(const std::wstring& catalogUrl, std::string& err) {
     return true;
 }
 
-namespace {
-
-std::string urlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out.push_back((char)c);
-        else if (c == ' ')
-            out += "%20";
-        else { out.push_back('%'); out.push_back(hex[c >> 4]); out.push_back(hex[c & 0xF]); }
-    }
-    return out;
-}
-
-}
+using motion::urlEncode;
 
 bool Library::fetchPexels(const std::wstring& apiKey, const std::string& query,
                           int maxWidth, std::string& err) {
@@ -171,9 +151,8 @@ bool Library::fetchPexels(const std::wstring& apiKey, const std::string& query,
     std::string body;
     if (!http::getString(url, body, err, headers)) return false;
 
-    Json root;
-    try { root = Json::parse(body); }
-    catch (const std::exception& e) { err = std::string("Pexels JSON: ") + e.what(); return false; }
+    Json root = Json::parse(body);
+    if (root.isNull()) { err = std::string("Pexels JSON: ") + Json::lastError(); return false; }
 
     const Json& videos = root["videos"];
     if (!videos.isArray()) { err = "Pexels returned no videos"; return false; }
@@ -451,7 +430,8 @@ bool Library::isDownloaded(const Wallpaper& w) {
 }
 
 bool Library::ensureDownloaded(const Wallpaper& w,
-                               const std::function<void(int)>& onProgress,
+                               void(*onProgress)(int, void*),
+                               void* progressCtx,
                                std::wstring& outPath,
                                std::string& err) {
     std::wstring dest = localPath(w);
@@ -459,12 +439,12 @@ bool Library::ensureDownloaded(const Wallpaper& w,
 
     if (w.isLocal) {
         if (!fileExists(dest)) { err = "Imported file is missing"; return false; }
-        if (onProgress) onProgress(100);
+        if (onProgress) onProgress(100, progressCtx);
         return true;
     }
 
     if (isDownloaded(w)) {
-        if (onProgress) onProgress(100);
+        if (onProgress) onProgress(100, progressCtx);
         return true;
     }
 
@@ -479,18 +459,24 @@ bool Library::ensureDownloaded(const Wallpaper& w,
     }
     if (mediaUrl.empty()) { err = "No media URL for this wallpaper"; return false; }
 
-    auto progress = [&](unsigned long long received, unsigned long long total) {
-        if (!onProgress) return;
-        if (total > 0) onProgress((int)((received * 100) / total));
-        else           onProgress(-1);
+    struct ProgressThunk {
+        void(*cb)(int, void*);
+        void* ctx;
+        static void bridge(unsigned long long received, unsigned long long total, void* ctx) {
+            auto* self = (ProgressThunk*)ctx;
+            if (!self->cb) return;
+            if (total > 0) self->cb((int)((received * 100) / total), self->ctx);
+            else           self->cb(-1, self->ctx);
+        }
     };
+    ProgressThunk thunk{ onProgress, progressCtx };
 
-    return http::downloadFile(mediaUrl, dest, progress, err);
+    return http::downloadFile(mediaUrl, dest, ProgressThunk::bridge, &thunk, err);
 }
 
 bool Library::exportMedia(const Wallpaper& w, const std::wstring& destPath, std::string& err) {
     std::wstring src;
-    if (!ensureDownloaded(w, nullptr, src, err)) return false;
+    if (!ensureDownloaded(w, nullptr, nullptr, src, err)) return false;
     if (!CopyFileW(src.c_str(), destPath.c_str(), FALSE)) {
         char buf[64];
         _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Export failed (%lu)", GetLastError());

@@ -12,10 +12,7 @@ namespace motion {
 
 namespace {
 
-bool fileExists(const std::wstring& path) {
-    DWORD attr = GetFileAttributesW(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-}
+using motion::fileExists;
 
 std::wstring exeDir() {
     wchar_t path[MAX_PATH] = {0};
@@ -137,57 +134,58 @@ Config Config::load() {
         return Quality::Auto;
     };
 
-    try {
+    {
         Json j = Json::parse(text);
-        if (j["catalogUrl"].isString())   cfg.catalogUrl = widen(j["catalogUrl"].asString());
-        if (j["pexelsApiKey"].isString()) cfg.pexelsApiKey = widen(j["pexelsApiKey"].asString());
-        cfg.muteByDefault    = j["muteByDefault"].asBool(false);
-        cfg.firstRun         = j["firstRun"].asBool(true);
-        cfg.mode = (j["mode"].asString("span") == "per-monitor")
-                       ? WallpaperMode::PerMonitor : WallpaperMode::Span;
-        cfg.quality            = qualityFrom(j["quality"].asString("auto"));
-        cfg.pauseOnFullscreen  = j["pauseOnFullscreen"].asBool(true);
-        cfg.pauseWhenMaximized = j["pauseWhenMaximized"].asBool(true);
-        cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(false);
-        cfg.pauseOnBattery     = j["pauseOnBattery"].asBool(false);
-        cfg.lowEndMode         = j["lowEndMode"].asBool(false);
-        cfg.occlusionTimeoutSec = j["occlusionTimeoutSec"].asInt(0);
-        if (cfg.occlusionTimeoutSec < 0 || cfg.occlusionTimeoutSec > 300) cfg.occlusionTimeoutSec = 0;
-        cfg.occlusionPollMs    = j["occlusionPollMs"].asInt(150);
-        if (cfg.occlusionPollMs < 50 || cfg.occlusionPollMs > 5000) cfg.occlusionPollMs = 150;
-        cfg.occlusionGraceMs   = j["occlusionGraceMs"].asInt(0);
-        if (cfg.occlusionGraceMs < 0 || cfg.occlusionGraceMs > 10000) cfg.occlusionGraceMs = 0;
-        cfg.playbackSpeed      = j["playbackSpeed"].asNumber(1.0);
-        if (cfg.playbackSpeed < 0.25 || cfg.playbackSpeed > 4.0) cfg.playbackSpeed = 1.0;
-        cfg.moeCategory        = j["moeCategory"].asString("");
-        cfg.libraryCount       = j["libraryCount"].asInt(24);
-        if (cfg.libraryCount < 6 || cfg.libraryCount > 96) cfg.libraryCount = 24;
-        cfg.currentWallpaperId = j["currentWallpaperId"].asString();
-        if (j["currentMediaPath"].isString())
-            cfg.currentMediaPath = widen(j["currentMediaPath"].asString());
-        cfg.enginePid = (unsigned long)j["enginePid"].asNumber(0);
+        if (!j.isNull()) {
+            if (j["catalogUrl"].isString())   cfg.catalogUrl = widen(j["catalogUrl"].asString());
+            if (j["pexelsApiKey"].isString()) cfg.pexelsApiKey = widen(j["pexelsApiKey"].asString());
+            cfg.muteByDefault    = j["muteByDefault"].asBool(false);
+            cfg.firstRun         = j["firstRun"].asBool(true);
+            cfg.mode = (j["mode"].asString("span") == "per-monitor")
+                           ? WallpaperMode::PerMonitor : WallpaperMode::Span;
+            cfg.quality            = qualityFrom(j["quality"].asString("auto"));
+            cfg.pauseOnFullscreen  = j["pauseOnFullscreen"].asBool(true);
+            cfg.pauseWhenMaximized = j["pauseWhenMaximized"].asBool(true);
+            cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(false);
+            cfg.pauseOnBattery     = j["pauseOnBattery"].asBool(false);
+            cfg.lowEndMode         = j["lowEndMode"].asBool(false);
+            cfg.occlusionTimeoutSec = j["occlusionTimeoutSec"].asInt(0);
+            if (cfg.occlusionTimeoutSec < 0 || cfg.occlusionTimeoutSec > 300) cfg.occlusionTimeoutSec = 0;
+            cfg.occlusionPollMs    = j["occlusionPollMs"].asInt(150);
+            if (cfg.occlusionPollMs < 50 || cfg.occlusionPollMs > 5000) cfg.occlusionPollMs = 150;
+            cfg.occlusionGraceMs   = j["occlusionGraceMs"].asInt(0);
+            if (cfg.occlusionGraceMs < 0 || cfg.occlusionGraceMs > 10000) cfg.occlusionGraceMs = 0;
+            cfg.playbackSpeed      = j["playbackSpeed"].asNumber(1.0);
+            if (cfg.playbackSpeed < 0.25 || cfg.playbackSpeed > 4.0) cfg.playbackSpeed = 1.0;
+            cfg.moeCategory        = j["moeCategory"].asString("");
+            cfg.libraryCount       = j["libraryCount"].asInt(24);
+            if (cfg.libraryCount < 6 || cfg.libraryCount > 96) cfg.libraryCount = 24;
+            cfg.currentWallpaperId = j["currentWallpaperId"].asString();
+            if (j["currentMediaPath"].isString())
+                cfg.currentMediaPath = widen(j["currentMediaPath"].asString());
+            cfg.enginePid = (unsigned long)j["enginePid"].asNumber(0);
 
-        const Json& mon = j["monitors"];
-        if (mon.isObject())
-            for (const auto& kv : mon.object)
-                if (kv.second.isString())
-                    cfg.monitorAssignments[kv.first] = widen(kv.second.asString());
+            const Json& mon = j["monitors"];
+            if (mon.isObject())
+                for (const auto& kv : mon.object)
+                    if (kv.second.isString())
+                        cfg.monitorAssignments[kv.first] = widen(kv.second.asString());
 
-        bool normalized = false;
-        std::wstring media = normalizeMediaPath(cfg.currentMediaPath);
-        if (media != cfg.currentMediaPath) {
-            cfg.currentMediaPath = media;
-            normalized = true;
-        }
-        for (auto& kv : cfg.monitorAssignments) {
-            std::wstring monMedia = normalizeMediaPath(kv.second);
-            if (monMedia != kv.second) {
-                kv.second = monMedia;
+            bool normalized = false;
+            std::wstring media = normalizeMediaPath(cfg.currentMediaPath);
+            if (media != cfg.currentMediaPath) {
+                cfg.currentMediaPath = media;
                 normalized = true;
             }
+            for (auto& kv : cfg.monitorAssignments) {
+                std::wstring monMedia = normalizeMediaPath(kv.second);
+                if (monMedia != kv.second) {
+                    kv.second = monMedia;
+                    normalized = true;
+                }
+            }
+            if (normalized) cfg.save();
         }
-        if (normalized) cfg.save();
-    } catch (...) {
     }
 
     return cfg;

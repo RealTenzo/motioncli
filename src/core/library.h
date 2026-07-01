@@ -1,7 +1,6 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <functional>
 
 namespace motion {
 
@@ -50,7 +49,8 @@ public:
     static bool isDownloaded(const Wallpaper& w);
 
     bool ensureDownloaded(const Wallpaper& w,
-                          const std::function<void(int percent)>& onProgress,
+                          void(*onProgress)(int percent, void* ctx),
+                          void* progressCtx,
                           std::wstring& outPath,
                           std::string& err);
     bool exportMedia(const Wallpaper& w, const std::wstring& destPath, std::string& err);

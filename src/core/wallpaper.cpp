@@ -1,6 +1,7 @@
 #include "core/wallpaper.h"
 #include "core/config.h"
 #include "core/monitors.h"
+#include "util/str.h"
 #include "resource.h"
 
 #include <windows.h>
@@ -70,10 +71,7 @@ void openLog() {
     logLine(L"=== MotionCLI engine started ===");
 }
 
-bool fileExists(const std::wstring& p) {
-    DWORD a = GetFileAttributesW(p.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
+using motion::fileExists;
 
 std::wstring exePath() {
     wchar_t buf[MAX_PATH] = {};
