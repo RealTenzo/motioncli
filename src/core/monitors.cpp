@@ -1,4 +1,5 @@
 #include "core/monitors.h"
+#include "util/str.h"
 
 #include <windows.h>
 
@@ -7,16 +8,6 @@
 namespace motion {
 
 namespace {
-
-std::string narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                                  nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                        out.data(), len, nullptr, nullptr);
-    return out;
-}
 
 BOOL CALLBACK monitorProc(HMONITOR mon, HDC, LPRECT, LPARAM userData) {
     auto* list = reinterpret_cast<std::vector<MonitorInfo>*>(userData);

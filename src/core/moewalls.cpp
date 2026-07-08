@@ -1,76 +1,34 @@
 #include "core/moewalls.h"
 #include "net/http.h"
+#include "util/str.h"
 
 #include <windows.h>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <string_view>
 
 namespace motion::moewalls {
 
 namespace {
 
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring out(len, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
-    return out;
-}
+using motion::htmlDecode;
+using motion::trim;
+using motion::endsWith;
+using motion::urlEncode;
 
-std::string htmlDecode(const std::string& s) {
-    std::string out;
-    for (size_t i = 0; i < s.size();) {
-        if (s[i] == '&') {
-            if (s.compare(i, 5, "&amp;") == 0)   { out.push_back('&');  i += 5; continue; }
-            if (s.compare(i, 6, "&#038;") == 0)  { out.push_back('&');  i += 6; continue; }
-            if (s.compare(i, 4, "&lt;") == 0)    { out.push_back('<');  i += 4; continue; }
-            if (s.compare(i, 4, "&gt;") == 0)    { out.push_back('>');  i += 4; continue; }
-            if (s.compare(i, 6, "&quot;") == 0)  { out.push_back('"');  i += 6; continue; }
-            if (s.compare(i, 5, "&#39;") == 0)   { out.push_back('\''); i += 5; continue; }
-            if (s.compare(i, 7, "&#8217;") == 0) { out.push_back('\''); i += 7; continue; }
-        }
-        out.push_back(s[i++]);
-    }
-    return out;
-}
-
-std::string trim(const std::string& s) {
-    size_t a = s.find_first_not_of(" \t\r\n");
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-}
-
-bool endsWith(const std::string& s, const std::string& suf) {
-    return s.size() >= suf.size() &&
-           s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
-}
-
-std::string urlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out.push_back((char)c);
-        else if (c == ' ') out += "%20";
-        else { out.push_back('%'); out.push_back(hex[c >> 4]); out.push_back(hex[c & 0xF]); }
-    }
-    return out;
-}
-
-std::string quotedAfter(const std::string& html, size_t from, const char* key) {
+std::string_view quotedAfter(const std::string& html, size_t from, const char* key) {
     size_t k = html.find(key, from);
     if (k == std::string::npos) return {};
     size_t q = html.find('"', k + std::strlen(key) - 1);
     if (q == std::string::npos) return {};
     size_t e = html.find('"', q + 1);
     if (e == std::string::npos) return {};
-    return html.substr(q + 1, e - q - 1);
+    return std::string_view(html).substr(q + 1, e - q - 1);
 }
 
-std::string metaContent(const std::string& html, const char* prop) {
+std::string_view metaContent(const std::string& html, const char* prop) {
     std::string needle = std::string("property=\"") + prop + "\"";
     size_t p = html.find(needle);
     if (p == std::string::npos) return {};
@@ -146,6 +104,7 @@ bool fetchListing(const std::string& query, const std::string& category,
             break;
         }
         collectPostUrls(html, q.empty() ? category : std::string(), postUrls, seen);
+        if ((int)postUrls.size() >= maxItems) break;
     }
 
     if (postUrls.empty()) {
@@ -173,11 +132,11 @@ bool resolve(Item& it, std::string& err) {
 
     size_t btn = html.find("id=\"moe-download\"");
     if (btn == std::string::npos) { err = "No download link on the page"; return false; }
-    std::string token = quotedAfter(html, btn, "data-url=\"");
+    std::string token = std::string(quotedAfter(html, btn, "data-url=\""));
     if (token.empty()) { err = "No download link on the page"; return false; }
     it.url = "https://go.moewalls.com/download.php?video=" + token;
 
-    std::string title = trim(htmlDecode(metaContent(html, "og:title")));
+    std::string title = trim(htmlDecode(std::string(metaContent(html, "og:title"))));
     const std::string brand = " - MoeWalls";
     if (endsWith(title, brand)) title.resize(title.size() - brand.size());
     const std::string lw = " Live Wallpaper";
@@ -185,10 +144,10 @@ bool resolve(Item& it, std::string& err) {
     title = trim(title);
     if (!title.empty()) it.title = title;
 
-    it.preview = metaContent(html, "og:image");
+    it.preview = std::string(metaContent(html, "og:image"));
 
-    std::string w = metaContent(html, "og:image:width");
-    std::string h = metaContent(html, "og:image:height");
+    std::string w = std::string(metaContent(html, "og:image:width"));
+    std::string h = std::string(metaContent(html, "og:image:height"));
     if (!w.empty() && !h.empty()) { it.resolution = w + "x" + h; it.width = std::atoi(w.c_str()); }
 
     size_t pv = html.find("/wp-content/uploads/preview/");
@@ -196,24 +155,24 @@ bool resolve(Item& it, std::string& err) {
         size_t qo = html.rfind('"', pv);
         size_t e = html.find('"', pv);
         if (qo != std::string::npos && e != std::string::npos && e > pv) {
-            std::string rel = html.substr(qo + 1, e - qo - 1);
+            std::string_view rel = std::string_view(html).substr(qo + 1, e - qo - 1);
             if (!rel.empty())
                 it.previewVideo = rel.compare(0, 4, "http") == 0
-                                      ? rel : "https://moewalls.com" + rel;
+                                      ? std::string(rel) : "https://moewalls.com" + std::string(rel);
         }
     }
 
     size_t ts = html.find("class=\"tag-items\"");
     if (ts != std::string::npos) {
         size_t te = html.find("</div>", ts);
-        std::string block = html.substr(ts, (te == std::string::npos ? html.size() : te) - ts);
+        std::string_view block = std::string_view(html).substr(ts, (te == std::string::npos ? html.size() : te) - ts);
         const char* mark = "rel=\"tag\">";
         size_t p = 0;
         while ((p = block.find(mark, p)) != std::string::npos) {
             p += std::strlen(mark);
             size_t e = block.find("</a>", p);
             if (e == std::string::npos) break;
-            std::string tag = trim(htmlDecode(block.substr(p, e - p)));
+            std::string tag = trim(htmlDecode(std::string(block.substr(p, e - p))));
             if (!tag.empty()) it.tags.push_back(tag);
             p = e + 4;
             if (it.tags.size() >= 6) break;

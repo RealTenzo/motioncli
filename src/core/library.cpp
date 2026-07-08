@@ -4,6 +4,7 @@
 #include "core/steam.h"
 #include "net/http.h"
 #include "util/json.h"
+#include "util/str.h"
 
 #include <windows.h>
 
@@ -13,28 +14,11 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <algorithm>
 
 namespace motion {
 
 namespace {
-
-std::wstring widen(const std::string& s) {
-    if (s.empty()) return {};
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), nullptr, 0);
-    std::wstring out(len, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), (int)s.size(), out.data(), len);
-    return out;
-}
-
-std::string narrow(const std::wstring& w) {
-    if (w.empty()) return {};
-    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                                  nullptr, 0, nullptr, nullptr);
-    std::string out(len, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(),
-                        out.data(), len, nullptr, nullptr);
-    return out;
-}
 
 std::wstring extensionFor(const std::string& url) {
     size_t q = url.find('?');
@@ -51,10 +35,7 @@ std::wstring extensionFor(const std::string& url) {
     return L".mp4";
 }
 
-bool fileExists(const std::wstring& path) {
-    DWORD attr = GetFileAttributesW(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-}
+using motion::fileExists;
 
 std::string sanitize(const std::string& s) {
     std::string out;
@@ -70,11 +51,11 @@ std::string sanitize(const std::string& s) {
 }
 
 bool parseCatalog(const std::string& body, std::vector<Wallpaper>& out, std::string& err) {
-    Json root;
-    try {
-        root = Json::parse(body);
-    } catch (const std::exception& e) {
-        err = std::string("Invalid catalog JSON: ") + e.what();
+    Json root = Json::parse(body);
+    if (root.isNull()) {
+        const char* le = Json::lastError();
+        err = "Invalid catalog JSON";
+        if (le) { err += ": "; err += le; }
         return false;
     }
 
@@ -136,10 +117,10 @@ const char* kBuiltinCatalog = R"JSON({
 }
 
 void Library::rebuild() {
-    m_items.clear();
-    m_items.reserve(m_catalog.size() + m_local.size());
-    m_items.insert(m_items.end(), m_catalog.begin(), m_catalog.end());
-    m_items.insert(m_items.end(), m_local.begin(), m_local.end());
+    m_merged.clear();
+    m_merged.reserve(m_catalog.size() + m_local.size());
+    for (const auto& w : m_catalog) m_merged.push_back(&w);
+    for (const auto& w : m_local) m_merged.push_back(&w);
 }
 
 bool Library::fetch(const std::wstring& catalogUrl, std::string& err) {
@@ -156,23 +137,7 @@ bool Library::fetch(const std::wstring& catalogUrl, std::string& err) {
     return true;
 }
 
-namespace {
-
-std::string urlEncode(const std::string& s) {
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (unsigned char c : s) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~')
-            out.push_back((char)c);
-        else if (c == ' ')
-            out += "%20";
-        else { out.push_back('%'); out.push_back(hex[c >> 4]); out.push_back(hex[c & 0xF]); }
-    }
-    return out;
-}
-
-}
+using motion::urlEncode;
 
 bool Library::fetchPexels(const std::wstring& apiKey, const std::string& query,
                           int maxWidth, std::string& err) {
@@ -188,9 +153,13 @@ bool Library::fetchPexels(const std::wstring& apiKey, const std::string& query,
     std::string body;
     if (!http::getString(url, body, err, headers)) return false;
 
-    Json root;
-    try { root = Json::parse(body); }
-    catch (const std::exception& e) { err = std::string("Pexels JSON: ") + e.what(); return false; }
+    Json root = Json::parse(body);
+    if (root.isNull()) {
+        const char* le = Json::lastError();
+        err = "Pexels JSON";
+        if (le) { err += ": "; err += le; }
+        return false;
+    }
 
     const Json& videos = root["videos"];
     if (!videos.isArray()) { err = "Pexels returned no videos"; return false; }
@@ -288,12 +257,15 @@ bool Library::resolve(Wallpaper& w, std::string& err) {
     return true;
 }
 
-std::vector<Wallpaper> Library::savedWallpapers() {
+const std::vector<Wallpaper>& Library::savedWallpapers() {
     loadLocalLibrary();
-    std::vector<Wallpaper> out = m_local;
+    scanFileSystem();
+    return m_local;
+}
 
+void Library::scanFileSystem() {
     std::set<std::wstring> have;
-    for (const auto& w : out) have.insert(widen(w.localFile));
+    for (const auto& w : m_local) have.insert(widen(w.localFile));
 
     std::wstring dir = Config::wallpapersDir();
     WIN32_FIND_DATAW fd{};
@@ -324,11 +296,11 @@ std::vector<Wallpaper> Library::savedWallpapers() {
             w.isLocal = true;
             w.localFile = narrow(path);
             w.tags = { "saved" };
-            out.push_back(std::move(w));
+            m_local.push_back(std::move(w));
         } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
-    return out;
+    rebuild();
 }
 
 void Library::loadBuiltin() {
@@ -367,6 +339,7 @@ void Library::saveLocalLibrary() {
     Json root = Json::makeObject();
     root.set("version", Json::makeNumber(1));
     Json arr = Json::makeArray();
+    arr.array.reserve(m_local.size());
     for (const Wallpaper& w : m_local) {
         Json e = Json::makeObject();
         e.set("id", Json::makeString(w.id));
@@ -376,6 +349,7 @@ void Library::saveLocalLibrary() {
         e.set("local_path", Json::makeString(w.localFile));
         e.set("resolution", Json::makeString(w.resolution));
         Json tags = Json::makeArray();
+        tags.array.reserve(w.tags.size());
         for (const auto& t : w.tags) tags.array.push_back(Json::makeString(t));
         e.set("tags", std::move(tags));
         arr.array.push_back(std::move(e));
@@ -463,7 +437,8 @@ bool Library::isDownloaded(const Wallpaper& w) {
 }
 
 bool Library::ensureDownloaded(const Wallpaper& w,
-                               const std::function<void(int)>& onProgress,
+                               void(*onProgress)(int, void*),
+                               void* progressCtx,
                                std::wstring& outPath,
                                std::string& err) {
     std::wstring dest = localPath(w);
@@ -471,12 +446,12 @@ bool Library::ensureDownloaded(const Wallpaper& w,
 
     if (w.isLocal) {
         if (!fileExists(dest)) { err = "Imported file is missing"; return false; }
-        if (onProgress) onProgress(100);
+        if (onProgress) onProgress(100, progressCtx);
         return true;
     }
 
     if (isDownloaded(w)) {
-        if (onProgress) onProgress(100);
+        if (onProgress) onProgress(100, progressCtx);
         return true;
     }
 
@@ -491,18 +466,24 @@ bool Library::ensureDownloaded(const Wallpaper& w,
     }
     if (mediaUrl.empty()) { err = "No media URL for this wallpaper"; return false; }
 
-    auto progress = [&](unsigned long long received, unsigned long long total) {
-        if (!onProgress) return;
-        if (total > 0) onProgress((int)((received * 100) / total));
-        else           onProgress(-1);
+    struct ProgressThunk {
+        void(*cb)(int, void*);
+        void* ctx;
+        static void bridge(unsigned long long received, unsigned long long total, void* ctx) {
+            auto* self = (ProgressThunk*)ctx;
+            if (!self->cb) return;
+            if (total > 0) { int p = (int)((received * 100) / total); if (p > 100) p = 100; self->cb(p, self->ctx); }
+            else           self->cb(-1, self->ctx);
+        }
     };
+    ProgressThunk thunk{ onProgress, progressCtx };
 
-    return http::downloadFile(mediaUrl, dest, progress, err);
+    return http::downloadFile(mediaUrl, dest, ProgressThunk::bridge, &thunk, err);
 }
 
 bool Library::exportMedia(const Wallpaper& w, const std::wstring& destPath, std::string& err) {
     std::wstring src;
-    if (!ensureDownloaded(w, nullptr, src, err)) return false;
+    if (!ensureDownloaded(w, nullptr, nullptr, src, err)) return false;
     if (!CopyFileW(src.c_str(), destPath.c_str(), FALSE)) {
         char buf[64];
         _snprintf_s(buf, sizeof(buf), _TRUNCATE, "Export failed (%lu)", GetLastError());

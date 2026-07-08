@@ -34,6 +34,7 @@ class Frame {
 public:
     Frame& line(const std::string& s = "");
     Frame& raw(const std::string& s);
+    Frame& write(char c);
 
     void clear() { m_buf.clear(); }
     const std::string& str() const { return m_buf; }

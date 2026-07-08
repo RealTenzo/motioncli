@@ -1,0 +1,15 @@
+build/
+.vs/
+*.user
+*.suo
+*.sdf
+*.ipch
+*.obj
+*.pdb
+*.idb
+*.tlog
+*.log
+Debug/
+Release/
+installer/
+wallpapers/

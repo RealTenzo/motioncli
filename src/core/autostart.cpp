@@ -1,8 +1,8 @@
+#include <string>
+
 #include "core/autostart.h"
 
 #include <windows.h>
-
-#include <string>
 
 namespace motion::autostart {
 

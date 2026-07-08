@@ -26,6 +26,8 @@ target_compile_definitions(motioncli PRIVATE
 
 if(MSVC)
     target_compile_options(motioncli PRIVATE /W3 /utf-8 /EHsc)
+    target_compile_options(motioncli PRIVATE $<$<CONFIG:Release>:/GL /O2 /Oy2 /Zc:inline /Qpar>)
+    target_link_options(motioncli PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
 endif()
 
 target_link_libraries(motioncli PRIVATE

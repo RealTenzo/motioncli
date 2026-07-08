@@ -12,7 +12,7 @@ void Menu::buildFrame(Frame& f, int selected) const {
         draw::title(f, m_title);
 
     if (!m_subtitle.empty()) {
-        f.line(std::string(color::gray) + "  " + m_subtitle + color::reset);
+        f.raw(color::gray).raw("  ").raw(m_subtitle).raw(color::reset).line();
     }
     f.line();
 
@@ -35,28 +35,29 @@ void Menu::buildFrame(Frame& f, int selected) const {
     }
 
     if (first > 0)
-        f.line(std::string(color::gray) + "  ▲ " + std::to_string(first) + " more" + color::reset);
+        f.raw(color::gray).raw("  ▲ ").raw(std::to_string(first)).raw(" more").raw(color::reset).line();
 
     for (int i = first; i < last; ++i) {
         const MenuItem& item = m_items[i];
         const bool sel = (i == selected);
 
-        std::string line = "  ";
         if (sel) {
-            line += std::string(color::brightCyan) + color::bold + "❯ " + color::reset;
-            line += std::string(color::invert) + color::brightCyan + " " + item.label + " " + color::reset;
+            f.raw("  ").raw(color::brightCyan).raw(color::bold).raw("❯ ").raw(color::reset)
+             .raw(color::invert).raw(color::brightCyan).raw(" ").raw(item.label).raw(" ").raw(color::reset);
         } else {
-            line += "  ";
-            line += item.enabled ? item.label
-                                 : std::string(color::gray) + item.label + color::reset;
+            f.raw("    ");
+            if (item.enabled)
+                f.raw(item.label);
+            else
+                f.raw(color::gray).raw(item.label).raw(color::reset);
         }
         if (!item.hint.empty())
-            line += std::string("   ") + color::gray + item.hint + color::reset;
-        f.line(line);
+            f.raw("   ").raw(color::gray).raw(item.hint).raw(color::reset);
+        f.line();
     }
 
     if (last < total)
-        f.line(std::string(color::gray) + "  ▼ " + std::to_string(total - last) + " more" + color::reset);
+        f.raw(color::gray).raw("  ▼ ").raw(std::to_string(total - last)).raw(" more").raw(color::reset).line();
 
     f.line();
     draw::footer(f, m_footer);
@@ -135,17 +136,17 @@ void banner(Frame& f) {
     f.raw(color::brightCyan);
     for (const char* l : art) f.line(l);
     f.raw(color::reset);
-    f.line(std::string(color::gray) + "        live wallpaper cli  ·  Dev by tenzo" + color::reset);
+    f.raw(color::gray).raw("        live wallpaper cli  ·  Dev by tenzo").raw(color::reset).line();
     f.line();
 }
 
 void title(Frame& f, const std::string& t) {
-    f.line(std::string(color::bold) + color::brightCyan + "  " + t + color::reset);
+    f.raw(color::bold).raw(color::brightCyan).raw("  ").raw(t).raw(color::reset).line();
     f.line();
 }
 
 void footer(Frame& f, const std::string& hint) {
-    f.line(std::string(color::gray) + "  " + hint + color::reset);
+    f.raw(color::gray).raw("  ").raw(hint).raw(color::reset).line();
 }
 
 }
