@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows_10%2F11-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/C++-17-blue?style=flat-square" alt="C++17">
@@ -12,7 +12,7 @@
 
 <p align="center">
   A super-lightweight live wallpaper engine for Windows.<br>
-  Keyboard-navigable terminal UI. No Electron. No browser. Just Media Foundation.
+  Keyboard-navigable terminal UI. No Electron. No browser. Powered by native DirectX and Media Foundation.
 </p>
 
 ---
@@ -31,7 +31,7 @@ One small detached process. Hardware-decoded video. No JS engine, no compositor,
 
 <img src="https://img.shields.io/badge/TUI-WASD%20%2F%20Arrow%20keys-0d1117?style=for-the-badge&labelColor=238636" alt="TUI">
 <img src="https://img.shields.io/badge/Library-MoeWalls_1000%2B-0d1117?style=for-the-badge&labelColor=1f6feb" alt="Library">
-<img src="https://img.shields.io/badge/Preview-In--console-0d1117?style=for-the-badge&labelColor=8957e5" alt="Preview">
+<img src="https://img.shields.io/badge/Preview-In--browser-0d1117?style=for-the-badge&labelColor=8957e5" alt="Preview">
 <img src="https://img.shields.io/badge/Cache-Download_1x-0d1117?style=for-the-badge&labelColor=da3633" alt="Cache">
 <img src="https://img.shields.io/badge/Per--Monitor-Yes-0d1117?style=for-the-badge&labelColor=f0883e" alt="Per-Monitor">
 <img src="https://img.shields.io/badge/Auto--Pause-Fullscreen%20%2F%20Maximized-0d1117?style=for-the-badge&labelColor=3fb950" alt="Auto-Pause">
@@ -50,7 +50,7 @@ winget install tenzo.motioncli
 ```
 
 **Installer:**
-Download `motioncli-setup.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it, pick your install path, done.
+Download `MotionCLI-Installer.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it, pick your install path, done.
 
 **Portable:**
 Download `motioncli.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it directly -- no install needed.
@@ -160,7 +160,8 @@ motioncli/
     tui/                    terminal, menus, in-console image preview
     util/                   JSON parser/serializer
   resources/                icons, .rc files
-  installer/                NSIS installer script
+  build/
+    installer.nsi           NSIS installer script
   winget/                   winget manifest files
   public/                   release binaries
 ```
