@@ -488,10 +488,14 @@ int runEngineFromConfig() {
 
 bool EngineController::restart(std::string& err) {
     stop();
+
+    wchar_t exePath[MAX_PATH] = {0};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+
     SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-    sei.lpFile = L"motioncli.exe";
+    sei.lpFile = exePath;
     sei.lpParameters = L"--render";
     sei.nShow = SW_HIDE;
     if (ShellExecuteExW(&sei)) {
