@@ -4,10 +4,14 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <cstdio>
+
 #include <string>
 #include <vector>
 
-int main() {
+int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::wstring> args;
@@ -16,11 +20,29 @@ int main() {
         LocalFree(argv);
     }
 
+    bool isEngine = false;
     for (const auto& a : args) {
-        if (a == L"--render" || a == L"--startup")
-            return motion::runEngineFromConfig();
+        if (a == L"--render" || a == L"--startup") {
+            isEngine = true;
+            break;
+        }
     }
 
+    if (isEngine) {
+        return motion::runEngineFromConfig();
+    }
+
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
+        AllocConsole();
+    }
+    FILE* dummy;
+    freopen_s(&dummy, "CONOUT$", "w", stdout);
+    freopen_s(&dummy, "CONOUT$", "w", stderr);
+    freopen_s(&dummy, "CONIN$", "r", stdin);
+
     motion::App app;
-    return app.run();
+    int ret = app.run();
+
+    FreeConsole();
+    return ret;
 }

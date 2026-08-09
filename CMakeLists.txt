@@ -14,7 +14,7 @@ endif()
 
 file(GLOB_RECURSE MOTION_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
 
-add_executable(motioncli ${MOTION_SOURCES} "${CMAKE_SOURCE_DIR}/resources/app.rc")
+add_executable(motioncli WIN32 ${MOTION_SOURCES} "${CMAKE_SOURCE_DIR}/resources/app.rc")
 
 target_include_directories(motioncli PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
@@ -31,4 +31,4 @@ if(MSVC)
 endif()
 
 target_link_libraries(motioncli PRIVATE
-    winhttp mfplay mf mfplat mfuuid shlwapi ole32 shell32 comdlg32 dxgi windowscodecs)
+    winhttp mf mfplat mfuuid mfreadwrite shlwapi ole32 shell32 comdlg32 dxgi d3d11 windowscodecs)

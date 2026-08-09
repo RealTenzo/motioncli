@@ -36,10 +36,12 @@ Terminal::Terminal() {
 
     SetConsoleOutputCP(CP_UTF8);
 
+    write("\x1b[?1049h"); // Enable Alternate Screen Buffer
     clearScreen();
 }
 
 Terminal::~Terminal() {
+    write("\x1b[?1049l"); // Disable Alternate Screen Buffer
     showCursor();
     write(color::reset);
     if (m_outHandle) SetConsoleMode((HANDLE)m_outHandle, m_savedOutMode);

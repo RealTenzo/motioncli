@@ -55,7 +55,7 @@ std::vector<std::string> wrapText(const std::string& text, size_t width) {
 }
 
 App::App() : m_config(Config::load()), m_engine(m_config) {
-    m_term.setTitle(L"Motion CLI — live wallpaper");
+    m_term.setTitle(L"Motion CLI - live wallpaper");
     m_term.hideCursor();
     m_hw = scanHardware();
 }
@@ -118,7 +118,7 @@ void App::notify(const std::string& title,
 void App::guide() {
     struct Beat { std::string who; std::string text; };
     const std::vector<Beat> beats = {
-        { "tenzo", "Yo! Welcome to Motion CLI. I'm tenzo — I made this." },
+        { "tenzo", "Yo! Welcome to Motion CLI. I'm tenzo - I made this." },
         { "tenzo", "It runs living video wallpapers on your desktop, no heavy apps." },
         { "tenzo", "Open Browse Library to pull free clips from MoeWalls." },
         { "tenzo", "Move with W/S or the arrow keys. Press A/D to flip category tabs." },
@@ -194,30 +194,30 @@ void App::mainMenu() {
         const bool running = m_engine.isRunning();
         std::string activeHint;
         if (running) {
-            activeHint = "● ";
+            activeHint = "● playing: ";
             activeHint += m_config.mode == WallpaperMode::PerMonitor
-                ? "per-monitor"
-                : (m_config.currentWallpaperId.empty() ? "running" : m_config.currentWallpaperId);
+                ? "multiple screens"
+                : (m_config.currentWallpaperId.empty() ? "custom video" : m_config.currentWallpaperId);
         } else {
-            activeHint = "none";
+            activeHint = "paused / stopped";
         }
 
         Menu menu(m_term, "Main menu", "A super-lightweight live wallpaper engine.");
         menu.setItems({
-            { "Browse Library",    "search · tabs · preview" },
-            { "My Wallpapers",     "saved & imported" },
-            { "Per-monitor setup", "one wallpaper per screen" },
-            { "Active Wallpaper",  activeHint },
-            { "Settings",          "" },
-            { "Quit",              "" },
+            { "Engine Status & Active Wallpaper", activeHint },
+            { "Browse Free Wallpapers",           "download from internet" },
+            { "My Local Wallpapers",              "saved & imported" },
+            { "Setup Multiple Monitors",          "assign a different wallpaper per screen" },
+            { "Settings",                         "" },
+            { "Quit",                             "" },
         });
         menu.setFooter("↑/↓ move   ⏎ select   q/esc quit");
 
         switch (menu.run()) {
-            case 0: browseLibrary();    break;
-            case 1: myWallpapers();     break;
-            case 2: perMonitorSetup();  break;
-            case 3: activeWallpaper();  break;
+            case 0: activeWallpaper();  break;
+            case 1: browseLibrary();    break;
+            case 2: myWallpapers();     break;
+            case 3: perMonitorSetup();  break;
             case 4: settings();         break;
             case 5: case -1:            return;
             default: break;
@@ -379,7 +379,7 @@ void App::myWallpapers() {
 
         std::string mySubtitle;
         if (saved.empty()) {
-            mySubtitle = "Nothing yet — import a video or download one from Browse.";
+            mySubtitle = "Nothing yet - import a video or download one from Browse.";
         } else {
             mySubtitle = std::to_string(saved.size());
             mySubtitle += " on this PC";
@@ -464,7 +464,7 @@ void App::wallpaperDetail(const Wallpaper& w) {
     std::vector<MenuItem> items = {
         { cached ? "Apply (whole desktop)" : "Download & apply", "" },
     };
-    if (canPreview) items.push_back({ "Preview", "in console · b for browser" });
+    if (canPreview) items.push_back({ "Preview", "open in browser/player" });
     items.push_back({ "Assign to a monitor…", "" });
     items.push_back({ "Export a copy…", "" });
     if (wr.isLocal) items.push_back({ "Delete", "" });
@@ -487,23 +487,32 @@ void App::wallpaperDetail(const Wallpaper& w) {
 }
 
 void App::previewWallpaper(const Wallpaper& w) {
+    int cols = 96, rows = 30;
+    CONSOLE_SCREEN_BUFFER_INFO csbi{};
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        cols = csbi.srWindow.Right - csbi.srWindow.Left + 1 - 4;
+        rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1 - 13;
+        if (cols < 24) cols = 24;
+        if (rows < 8)  rows = 8;
+    }
+
+    if (!w.previewVideo.empty()) {
+        Frame f;
+        draw::banner(f);
+        f.line("  Opening video in your browser/player...");
+        m_term.present(f);
+        ShellExecuteW(nullptr, L"open", widen(w.previewVideo).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        Sleep(1000);
+        return;
+    }
+
     std::string img;
     if (!w.preview.empty()) {
-        int cols = 96, rows = 30;
-        CONSOLE_SCREEN_BUFFER_INFO csbi{};
-        if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
-            cols = csbi.srWindow.Right - csbi.srWindow.Left + 1 - 4;
-            rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1 - 13;
-            if (cols < 24) cols = 24;
-            if (rows < 8)  rows = 8;
-        }
         std::vector<unsigned char> raw;
         std::string err;
         if (http::getBytes(widen(w.preview), raw, err, L"", 1024 * 1024))
             tui::renderImageFromMemory(raw, cols, rows, img);
     }
-
-    const std::string& browseTarget = !w.previewVideo.empty() ? w.previewVideo : w.preview;
 
     Frame f;
     draw::banner(f);
@@ -514,14 +523,10 @@ void App::previewWallpaper(const Wallpaper& w) {
     if (!img.empty()) f.raw(img);
     else f.raw(color::gray).raw("  (no in-console preview for this one)").raw(color::reset).line();
     f.line();
-    draw::footer(f, browseTarget.empty()
-        ? "any key: back"
-        : "b: open the moving preview in your browser    any key: back");
+    draw::footer(f, "any key: back");
     m_term.present(f);
 
-    KeyEvent ev = m_term.readKey();
-    if (ev.key == Key::Char && (ev.ch == 'b' || ev.ch == 'B') && !browseTarget.empty())
-        ShellExecuteW(nullptr, L"open", widen(browseTarget).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    m_term.readKey();
 }
 
 bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
@@ -723,7 +728,7 @@ void App::perMonitorSetup() {
         Menu menu(m_term, "Per-monitor setup",
                   m_config.mode == WallpaperMode::PerMonitor
                       ? "Mode: per-monitor (active)"
-                      : "Mode: span — assign a screen below to switch");
+                      : "Mode: span - assign a screen below to switch");
 
         std::vector<MenuItem> items;
         for (const MonitorInfo& m : monitors) {
@@ -738,7 +743,7 @@ void App::perMonitorSetup() {
                 size_t s = p.find_last_of(L"\\/");
                 hint = narrow(s == std::wstring::npos ? p : p.substr(s + 1));
             } else {
-                hint = "— not set —";
+                hint = "- not set -";
             }
             items.push_back({ label, hint });
         }
@@ -801,11 +806,11 @@ void App::activeWallpaper() {
             subtitle = "No wallpaper is running.";
         }
 
-        Menu menu(m_term, "Active Wallpaper", subtitle);
+        Menu menu(m_term, "Engine Status & Active Wallpaper", subtitle);
         menu.setItems({
-            { "Stop wallpaper",   "", running },
-            { running ? "Restart wallpaper" : "Resume last wallpaper", "", haveLast },
-            { "Default audio", m_config.muteByDefault ? "muted" : "on" },
+            { "Stop Engine (Hide Wallpaper)",   "", running },
+            { running ? "Restart Engine" : "Start Engine (Resume last wallpaper)", "", haveLast },
+            { "Default Audio", m_config.muteByDefault ? "muted" : "on" },
             { "Back", "" },
         });
         menu.setFooter("↑/↓ move   ⏎ select   esc back");
