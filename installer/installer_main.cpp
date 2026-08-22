@@ -6,6 +6,8 @@
 #include <tlhelp32.h>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <iostream>
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "shell32.lib")
@@ -16,6 +18,57 @@
 #define IDI_APPICON 101
 
 namespace {
+
+namespace color {
+    constexpr const char* reset      = "\x1b[0m";
+    constexpr const char* bold       = "\x1b[1m";
+    constexpr const char* dim        = "\x1b[2m";
+    constexpr const char* red        = "\x1b[31m";
+    constexpr const char* green      = "\x1b[32m";
+    constexpr const char* yellow     = "\x1b[33m";
+    constexpr const char* blue       = "\x1b[34m";
+    constexpr const char* magenta    = "\x1b[35m";
+    constexpr const char* cyan       = "\x1b[36m";
+    constexpr const char* brightCyan = "\x1b[96m";
+    constexpr const char* gray       = "\x1b[90m";
+    constexpr const char* invert     = "\x1b[7m";
+}
+
+void initTerminal() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    GetConsoleMode(hOut, &mode);
+    SetConsoleMode(hOut, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleTitleW(L"Motion CLI - Terminal Setup");
+}
+
+void clearScreen() {
+    std::cout << "\x1b[2J\x1b[H";
+}
+
+void hideCursor() {
+    std::cout << "\x1b[?25l";
+}
+
+void showCursor() {
+    std::cout << "\x1b[?25h";
+}
+
+void drawBanner() {
+    static const char* art[] = {
+        "  ███╗   ███╗ ██████╗ ████████╗██╗ ██████╗ ███╗   ██╗",
+        "  ████╗ ████║██╔═══██╗╚══██╔══╝██║██╔═══██╗████╗  ██║",
+        "  ██╔████╔██║██║   ██║   ██║   ██║██║   ██║██╔██╗ ██║",
+        "  ██║╚██╔╝██║██║   ██║   ██║   ██║██║   ██║██║╚██╗██║",
+        "  ██║ ╚═╝ ██║╚██████╔╝   ██║   ██║╚██████╔╝██║ ╚████║",
+        "  ╚═╝     ╚═╝ ╚═════╝    ╚═╝   ╚═╝ ╚═════╝ ╚═╝  ╚═══╝",
+    };
+    std::cout << color::brightCyan;
+    for (const char* l : art) std::cout << l << "\n";
+    std::cout << color::reset;
+    std::cout << color::gray << "        live wallpaper cli  ·  Interactive Installer\n" << color::reset << "\n";
+}
 
 void killRunningProcess(const wchar_t* processName) {
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -93,7 +146,7 @@ bool httpGetString(const std::wstring& host, const std::wstring& path, std::stri
     return bResults && !outBody.empty();
 }
 
-bool httpDownloadFile(const std::wstring& fullUrl, const std::wstring& destPath) {
+bool httpDownloadFileWithProgress(const std::wstring& fullUrl, const std::wstring& destPath, void(*onProgress)(int received, int total)) {
     URL_COMPONENTS urlComp = {};
     urlComp.dwStructSize = sizeof(urlComp);
     wchar_t hostName[256] = {0};
@@ -136,7 +189,6 @@ bool httpDownloadFile(const std::wstring& fullUrl, const std::wstring& destPath)
     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &scSize, WINHTTP_NO_HEADER_INDEX);
 
-    // Handle 301/302 Redirect
     if (statusCode == 301 || statusCode == 302 || statusCode == 307 || statusCode == 308) {
         wchar_t loc[2048] = {0};
         DWORD locSize = sizeof(loc);
@@ -144,15 +196,21 @@ bool httpDownloadFile(const std::wstring& fullUrl, const std::wstring& destPath)
             WinHttpCloseHandle(hRequest);
             WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
-            return httpDownloadFile(loc, destPath);
+            return httpDownloadFileWithProgress(loc, destPath, onProgress);
         }
     }
 
     bool success = false;
     if (bResults && statusCode == 200) {
+        DWORD contentLength = 0;
+        DWORD clSize = sizeof(contentLength);
+        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                            WINHTTP_HEADER_NAME_BY_INDEX, &contentLength, &clSize, WINHTTP_NO_HEADER_INDEX);
+
         HANDLE hFile = CreateFileW(destPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hFile != INVALID_HANDLE_VALUE) {
             DWORD dwSize = 0;
+            DWORD totalReceived = 0;
             success = true;
             do {
                 dwSize = 0;
@@ -162,6 +220,8 @@ bool httpDownloadFile(const std::wstring& fullUrl, const std::wstring& destPath)
                     if (WinHttpReadData(hRequest, buf.data(), dwSize, &dwDownloaded)) {
                         DWORD dwWritten = 0;
                         WriteFile(hFile, buf.data(), dwDownloaded, &dwWritten, nullptr);
+                        totalReceived += dwDownloaded;
+                        if (onProgress) onProgress(totalReceived, contentLength);
                     }
                 }
             } while (dwSize > 0);
@@ -253,11 +313,77 @@ void removeFromUserPath(const std::wstring& dirToRemove) {
     }
 }
 
-int doUninstall(bool silent) {
+std::wstring narrowToWide(const std::string& s) {
+    if (s.empty()) return L"";
+    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(len, 0);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], len);
+    if (!w.empty() && w.back() == 0) w.pop_back();
+    return w;
+}
+
+std::string wideToNarrow(const std::wstring& w) {
+    if (w.empty()) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string s(len, 0);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], len, nullptr, nullptr);
+    if (!s.empty() && s.back() == 0) s.pop_back();
+    return s;
+}
+
+int readKey() {
+    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+    INPUT_RECORD rec;
+    DWORD readCount = 0;
+    while (true) {
+        if (ReadConsoleInputW(hIn, &rec, 1, &readCount) && readCount == 1) {
+            if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown) {
+                WORD vk = rec.Event.KeyEvent.wVirtualKeyCode;
+                char ch = rec.Event.KeyEvent.uChar.AsciiChar;
+                if (vk == VK_UP) return 1001;
+                if (vk == VK_DOWN) return 1002;
+                if (vk == VK_RETURN) return 1003;
+                if (vk == VK_ESCAPE) return 1004;
+                if (ch == 'w' || ch == 'W') return 1001;
+                if (ch == 's' || ch == 'S') return 1002;
+                if (ch == ' ') return 1003;
+                return ch;
+            }
+        }
+    }
+}
+
+int doUninstall() {
+    clearScreen();
+    drawBanner();
+    std::cout << color::yellow << "  Motion CLI Uninstaller\n" << color::reset;
+    std::cout << color::gray << "  ──────────────────────────────────────────────────────────\n\n" << color::reset;
+    std::cout << "  Are you sure you want to completely uninstall Motion CLI? (Y/N): ";
+
+    char c;
+    std::cin >> c;
+    if (c != 'y' && c != 'Y') {
+        std::cout << "\n  " << color::gray << "Uninstallation aborted." << color::reset << "\n";
+        return 0;
+    }
+
+    std::cout << "\n  " << color::cyan << "Uninstalling..." << color::reset << "\n";
     killRunningProcess(L"motioncli.exe");
 
     std::wstring localAppData = getSpecialFolder(CSIDL_LOCAL_APPDATA);
     std::wstring installDir = localAppData + L"\\Programs\\MotionCLI";
+
+    // Read custom install dir from registry if present
+    HKEY hKey;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MotionCLI", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        wchar_t regLoc[MAX_PATH] = {0};
+        DWORD size = sizeof(regLoc);
+        if (RegQueryValueExW(hKey, L"InstallLocation", nullptr, nullptr, (LPBYTE)regLoc, &size) == ERROR_SUCCESS) {
+            if (wcslen(regLoc) > 0) installDir = regLoc;
+        }
+        RegCloseKey(hKey);
+    }
+
     std::wstring startMenu = getSpecialFolder(CSIDL_PROGRAMS) + L"\\Motion CLI.lnk";
     std::wstring desktop = getSpecialFolder(CSIDL_DESKTOP) + L"\\Motion CLI.lnk";
 
@@ -273,43 +399,128 @@ int doUninstall(bool silent) {
     RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MotionCLI");
     RemoveDirectoryW(installDir.c_str());
 
-    if (!silent) {
-        MessageBoxW(nullptr, L"Motion CLI has been successfully uninstalled from your system.", L"Motion CLI Uninstall", MB_OK | MB_ICONINFORMATION);
-    }
+    std::cout << "  " << color::green << "✓ Motion CLI has been successfully removed from your system." << color::reset << "\n\n";
+    std::cout << "  Press any key to exit...";
+    readKey();
     return 0;
 }
 
 }
 
-int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
+int main(int argc, char* argv[]) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    initTerminal();
 
-    std::wstring cmd = pCmdLine ? pCmdLine : L"";
-    bool silent = (cmd.find(L"/S") != std::string::npos || cmd.find(L"/s") != std::string::npos);
-    bool uninstall = (cmd.find(L"/uninstall") != std::string::npos || cmd.find(L"/u") != std::string::npos || cmd.find(L"-u") != std::string::npos);
-
-    if (uninstall) {
-        int res = doUninstall(silent);
-        CoUninitialize();
-        return res;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--uninstall" || arg == "-u" || arg == "/uninstall" || arg == "/u") {
+            int res = doUninstall();
+            CoUninitialize();
+            return res;
+        }
     }
 
+    std::wstring defaultInstallDir = getSpecialFolder(CSIDL_LOCAL_APPDATA) + L"\\Programs\\MotionCLI";
+    std::string installPath = wideToNarrow(defaultInstallDir);
+    bool createDesktop = true;
+    bool createStartMenu = true;
+    bool addToPath = true;
+    bool launchAfter = true;
+
+    int selected = 0;
+    const int totalOptions = 7;
+
+    while (true) {
+        clearScreen();
+        hideCursor();
+        drawBanner();
+
+        std::cout << color::bold << color::brightCyan << "  Setup Configuration\n" << color::reset;
+        std::cout << color::gray << "  Customize your installation options below:\n";
+        std::cout << "  ──────────────────────────────────────────────────────────\n\n" << color::reset;
+
+        auto printItem = [&](int idx, const std::string& label, const std::string& value) {
+            if (selected == idx) {
+                std::cout << "  " << color::brightCyan << color::bold << "❯ " << color::reset
+                          << color::invert << color::brightCyan << " " << label << " " << color::reset
+                          << "  " << color::yellow << value << color::reset << "\n";
+            } else {
+                std::cout << "    " << label << "  " << color::gray << value << color::reset << "\n";
+            }
+        };
+
+        printItem(0, "Install Location   ", "[" + installPath + "]");
+        printItem(1, "Desktop Shortcut   ", createDesktop ? "[✓] Enabled" : "[ ] Disabled");
+        printItem(2, "Start Menu Shortcut", createStartMenu ? "[✓] Enabled" : "[ ] Disabled");
+        printItem(3, "Add to PATH        ", addToPath ? "[✓] Enabled (run 'motioncli' from any terminal)" : "[ ] Disabled");
+        printItem(4, "Launch on finish   ", launchAfter ? "[✓] Yes" : "[ ] No");
+        std::cout << "\n";
+        printItem(5, "▶ START INSTALLATION", "");
+        printItem(6, "✕ Cancel", "");
+
+        std::cout << "\n" << color::gray << "  ↑/↓ move   ⏎ toggle/edit   esc cancel" << color::reset << "\n";
+
+        int key = readKey();
+        if (key == 1001) { // UP
+            selected = (selected - 1 + totalOptions) % totalOptions;
+        } else if (key == 1002) { // DOWN
+            selected = (selected + 1) % totalOptions;
+        } else if (key == 1004) { // ESC
+            clearScreen();
+            showCursor();
+            std::cout << "\n  Installation cancelled.\n\n";
+            CoUninitialize();
+            return 0;
+        } else if (key == 1003) { // ENTER
+            if (selected == 0) {
+                showCursor();
+                clearScreen();
+                drawBanner();
+                std::cout << color::bold << color::brightCyan << "  Edit Install Location\n\n" << color::reset;
+                std::cout << "  Current path: " << color::yellow << installPath << color::reset << "\n\n";
+                std::cout << "  Enter new path (or press Enter to keep): ";
+                std::string newPath;
+                std::getline(std::cin, newPath);
+                if (!newPath.empty()) {
+                    while (!newPath.empty() && (newPath.back() == '\\' || newPath.back() == '/')) newPath.pop_back();
+                    installPath = newPath;
+                }
+            } else if (selected == 1) {
+                createDesktop = !createDesktop;
+            } else if (selected == 2) {
+                createStartMenu = !createStartMenu;
+            } else if (selected == 3) {
+                addToPath = !addToPath;
+            } else if (selected == 4) {
+                launchAfter = !launchAfter;
+            } else if (selected == 5) {
+                break; // Start installation!
+            } else if (selected == 6) {
+                clearScreen();
+                showCursor();
+                std::cout << "\n  Installation cancelled.\n\n";
+                CoUninitialize();
+                return 0;
+            }
+        }
+    }
+
+    // Begin installation phase
+    clearScreen();
+    drawBanner();
+    std::cout << color::bold << color::brightCyan << "  Installing Motion CLI\n" << color::reset;
+    std::cout << color::gray << "  ──────────────────────────────────────────────────────────\n\n" << color::reset;
+
+    std::cout << "  " << color::cyan << "[1/4] Closing running instances..." << color::reset << "\n";
     killRunningProcess(L"motioncli.exe");
 
-    std::wstring localAppData = getSpecialFolder(CSIDL_LOCAL_APPDATA);
-    if (localAppData.empty()) {
-        if (!silent) MessageBoxW(nullptr, L"Failed to determine local app data path.", L"Motion CLI Setup", MB_OK | MB_ICONERROR);
-        CoUninitialize();
-        return 1;
-    }
+    std::wstring wInstallDir = narrowToWide(installPath);
+    SHCreateDirectoryExW(nullptr, wInstallDir.c_str(), nullptr);
 
-    std::wstring installDir = localAppData + L"\\Programs\\MotionCLI";
-    SHCreateDirectoryExW(nullptr, installDir.c_str(), nullptr);
+    std::wstring destExe = wInstallDir + L"\\motioncli.exe";
+    std::wstring destUninst = wInstallDir + L"\\uninstall.exe";
 
-    std::wstring destExe = installDir + L"\\motioncli.exe";
-    std::wstring destUninst = installDir + L"\\uninstall.exe";
-
-    // 1. Fetch version.json from GitHub
+    std::cout << "  " << color::cyan << "[2/4] Fetching latest release info from GitHub..." << color::reset << "\n";
     std::string jsonStr;
     std::string downloadUrl;
     std::string versionStr = "1.2.1";
@@ -324,14 +535,22 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         downloadUrl = "https://github.com/RealTenzo/motioncli/releases/latest/download/motioncli_portable.exe";
     }
 
-    // Convert downloadUrl to wide string
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, downloadUrl.c_str(), -1, nullptr, 0);
-    std::wstring wDownloadUrl(wlen, 0);
-    MultiByteToWideChar(CP_UTF8, 0, downloadUrl.c_str(), -1, &wDownloadUrl[0], wlen);
-    if (!wDownloadUrl.empty() && wDownloadUrl.back() == 0) wDownloadUrl.pop_back();
+    std::cout << "  " << color::cyan << "[3/4] Downloading Motion CLI v" << versionStr << "..." << color::reset << "\n";
 
-    // 2. Download executable
-    bool downloaded = httpDownloadFile(wDownloadUrl, destExe);
+    std::wstring wDownloadUrl = narrowToWide(downloadUrl);
+    auto onProgress = +[](int received, int total) {
+        int pct = (total > 0) ? (int)((received * 100) / total) : -1;
+        int barWidth = 24;
+        int filled = (pct >= 0) ? (pct * barWidth / 100) : 0;
+        std::string bar(filled, '#');
+        bar.append(barWidth - filled, '.');
+        std::cout << "\r    [" << color::brightCyan << bar << color::reset << "] "
+                  << ((pct >= 0) ? std::to_string(pct) : "...") << "% (" << (received / 1024) << " KB)   " << std::flush;
+    };
+
+    bool downloaded = httpDownloadFileWithProgress(wDownloadUrl, destExe, onProgress);
+    std::cout << "\n";
+
     if (!downloaded) {
         wchar_t currentExe[MAX_PATH] = {0};
         GetModuleFileNameW(nullptr, currentExe, MAX_PATH);
@@ -346,33 +565,41 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
     }
 
     if (!downloaded) {
-        if (!silent) MessageBoxW(nullptr, L"Failed to download Motion CLI from GitHub. Please check your internet connection.", L"Motion CLI Setup", MB_OK | MB_ICONERROR);
+        std::cout << "\n  " << color::red << "✕ Download failed. Please check your internet connection." << color::reset << "\n\n";
+        std::cout << "  Press any key to exit...";
+        showCursor();
+        readKey();
         CoUninitialize();
         return 1;
     }
+
+    std::cout << "  " << color::cyan << "[4/4] Setting up shortcuts and environment..." << color::reset << "\n";
 
     wchar_t thisInstallerPath[MAX_PATH] = {0};
     GetModuleFileNameW(nullptr, thisInstallerPath, MAX_PATH);
     CopyFileW(thisInstallerPath, destUninst.c_str(), FALSE);
 
-    std::wstring startMenuShortcut = getSpecialFolder(CSIDL_PROGRAMS) + L"\\Motion CLI.lnk";
-    std::wstring desktopShortcut = getSpecialFolder(CSIDL_DESKTOP) + L"\\Motion CLI.lnk";
+    if (createStartMenu) {
+        std::wstring startMenuShortcut = getSpecialFolder(CSIDL_PROGRAMS) + L"\\Motion CLI.lnk";
+        createShortcut(destExe, startMenuShortcut, L"Motion CLI - Live Wallpaper Engine");
+    }
 
-    createShortcut(destExe, startMenuShortcut, L"Motion CLI - Live Wallpaper Engine");
-    createShortcut(destExe, desktopShortcut, L"Motion CLI - Live Wallpaper Engine");
-    addToUserPath(installDir);
+    if (createDesktop) {
+        std::wstring desktopShortcut = getSpecialFolder(CSIDL_DESKTOP) + L"\\Motion CLI.lnk";
+        createShortcut(destExe, desktopShortcut, L"Motion CLI - Live Wallpaper Engine");
+    }
+
+    if (addToPath) {
+        addToUserPath(wInstallDir);
+    }
 
     HKEY hKey;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\MotionCLI",
                         0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS) {
         const wchar_t* dName = L"Motion CLI";
-        int vwlen = MultiByteToWideChar(CP_UTF8, 0, versionStr.c_str(), -1, nullptr, 0);
-        std::wstring wVer(vwlen, 0);
-        MultiByteToWideChar(CP_UTF8, 0, versionStr.c_str(), -1, &wVer[0], vwlen);
-        if (!wVer.empty() && wVer.back() == 0) wVer.pop_back();
-
+        std::wstring wVer = narrowToWide(versionStr);
         const wchar_t* pub = L"tenzo";
-        std::wstring uninstCmd = L"\"" + destUninst + L"\" /uninstall";
+        std::wstring uninstCmd = L"\"" + destUninst + L"\" --uninstall";
         std::wstring iconPath = destExe + L",0";
 
         RegSetValueExW(hKey, L"DisplayName", 0, REG_SZ, (const BYTE*)dName, (DWORD)((wcslen(dName) + 1) * sizeof(wchar_t)));
@@ -380,23 +607,31 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR pCmdLine, int) {
         RegSetValueExW(hKey, L"Publisher", 0, REG_SZ, (const BYTE*)pub, (DWORD)((wcslen(pub) + 1) * sizeof(wchar_t)));
         RegSetValueExW(hKey, L"DisplayIcon", 0, REG_SZ, (const BYTE*)iconPath.c_str(), (DWORD)((iconPath.size() + 1) * sizeof(wchar_t)));
         RegSetValueExW(hKey, L"UninstallString", 0, REG_SZ, (const BYTE*)uninstCmd.c_str(), (DWORD)((uninstCmd.size() + 1) * sizeof(wchar_t)));
-        RegSetValueExW(hKey, L"InstallLocation", 0, REG_SZ, (const BYTE*)installDir.c_str(), (DWORD)((installDir.size() + 1) * sizeof(wchar_t)));
+        RegSetValueExW(hKey, L"InstallLocation", 0, REG_SZ, (const BYTE*)wInstallDir.c_str(), (DWORD)((wInstallDir.size() + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
     }
 
-    if (!silent) {
-        int ans = MessageBoxW(nullptr,
-            L"Motion CLI has been successfully installed!\n\n"
-            L"• Added to Start Menu & Desktop\n"
-            L"• Added 'motioncli' command to PATH\n\n"
-            L"Would you like to launch Motion CLI now?",
-            L"Motion CLI Setup",
-            MB_YESNO | MB_ICONINFORMATION);
-        if (ans == IDYES) {
-            ShellExecuteW(nullptr, L"open", destExe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        }
+    clearScreen();
+    drawBanner();
+    std::cout << color::bold << color::green << "  ✓ Installation Complete!\n" << color::reset;
+    std::cout << color::gray << "  ──────────────────────────────────────────────────────────\n\n" << color::reset;
+    std::cout << "  • Version     : " << color::brightCyan << "v" << versionStr << color::reset << "\n";
+    std::cout << "  • Location    : " << color::yellow << installPath << color::reset << "\n";
+    if (addToPath) {
+        std::cout << "  • Command     : Run " << color::brightCyan << "motioncli" << color::reset << " in any terminal\n";
+    }
+    std::cout << "\n";
+
+    if (launchAfter) {
+        std::cout << "  " << color::green << "Launching Motion CLI now..." << color::reset << "\n\n";
+        ShellExecuteW(nullptr, L"open", destExe.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        Sleep(800);
+    } else {
+        std::cout << "  Press any key to finish...";
+        readKey();
     }
 
+    showCursor();
     CoUninitialize();
     return 0;
 }

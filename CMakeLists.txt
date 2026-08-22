@@ -1,7 +1,22 @@
 cmake_minimum_required(VERSION 3.20)
 
+# Read version automatically from version.json
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/version.json")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.json" VER_JSON_CONTENT)
+    string(REGEX MATCH "\"version\"[ \t]*:[ \t]*\"([^\"]+)\"" _ "${VER_JSON_CONTENT}")
+    if(CMAKE_MATCH_1)
+        set(APP_VERSION "${CMAKE_MATCH_1}")
+    else()
+        set(APP_VERSION "1.2.1")
+    endif()
+else()
+    set(APP_VERSION "1.2.1")
+endif()
+
+message(STATUS "Building Motion CLI Version: ${APP_VERSION} (read from version.json)")
+
 project(motioncli
-    VERSION 1.2.1
+    VERSION ${APP_VERSION}
     DESCRIPTION "Super-lightweight live wallpaper CLI - Dev by tenzo"
     LANGUAGES CXX RC)
 
@@ -23,7 +38,7 @@ target_include_directories(motioncli PRIVATE
 
 target_compile_definitions(motioncli PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-    MOTION_VERSION="${PROJECT_VERSION}")
+    MOTION_VERSION="${APP_VERSION}")
 
 if(MSVC)
     target_compile_options(motioncli PRIVATE /W3 /utf-8 /EHsc)
@@ -34,14 +49,14 @@ endif()
 target_link_libraries(motioncli PRIVATE
     winhttp mf mfplat mfuuid mfreadwrite shlwapi ole32 shell32 comdlg32 dxgi d3d11 windowscodecs)
 
-# Universal Online Web Installer (Reads version.json directly from GitHub)
-add_executable(MotionCLI-Installer WIN32
+# Terminal-based Interactive Web Installer (Reads version.json directly from GitHub)
+add_executable(MotionCLI-Installer
     "${CMAKE_SOURCE_DIR}/installer/installer_main.cpp"
     "${CMAKE_SOURCE_DIR}/installer/installer.rc")
 
 target_compile_definitions(MotionCLI-Installer PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
-    MOTION_VERSION="${PROJECT_VERSION}")
+    MOTION_VERSION="${APP_VERSION}")
 
 if(MSVC)
     target_compile_options(MotionCLI-Installer PRIVATE /W3 /utf-8 /EHsc)
