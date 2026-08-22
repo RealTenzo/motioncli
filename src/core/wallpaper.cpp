@@ -2,11 +2,14 @@
 #include "core/config.h"
 #include "core/monitors.h"
 #include "util/str.h"
+#include "resource.h"
 
 #include <windows.h>
 #include <shellapi.h>
 #include <d3d11.h>
+#include <d3d10.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfmediaengine.h>
@@ -38,6 +41,12 @@ void logf(const wchar_t* fmt, Args... args) {
 HWND g_progman = nullptr;
 HWND g_workerW = nullptr;
 HWND g_listview = nullptr;
+
+Config g_currentCfg;
+std::atomic<bool> g_manualPaused{false};
+
+struct EngineState;
+EngineState* g_currentEngineState = nullptr;
 
 BOOL CALLBACK enumWorkerWCb(HWND top, LPARAM) {
     HWND shell = FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr);
@@ -121,11 +130,21 @@ IMFDXGIDeviceManager* g_dxgiManager = nullptr;
 UINT g_resetToken = 0;
 
 bool initD3D11() {
-    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
+    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
     D3D_FEATURE_LEVEL fl;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 2, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
-    if (FAILED(hr)) return false;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 4, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
+    if (FAILED(hr)) {
+        creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 4, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
+        if (FAILED(hr)) return false;
+    }
+
+    ID3D10Multithread* mt = nullptr;
+    if (SUCCEEDED(g_d3dContext->QueryInterface(__uuidof(ID3D10Multithread), (void**)&mt)) && mt) {
+        mt->SetMultithreadProtected(TRUE);
+        mt->Release();
+    }
 
     hr = MFCreateDXGIDeviceManager(&g_resetToken, &g_dxgiManager);
     if (FAILED(hr)) return false;
@@ -138,6 +157,17 @@ void cleanupD3D11() {
     if (g_dxgiManager) { g_dxgiManager->Release(); g_dxgiManager = nullptr; }
     if (g_d3dContext) { g_d3dContext->Release(); g_d3dContext = nullptr; }
     if (g_d3dDevice) { g_d3dDevice->Release(); g_d3dDevice = nullptr; }
+}
+
+void trimMemory() {
+    if (g_d3dDevice) {
+        IDXGIDevice3* dxgi3 = nullptr;
+        if (SUCCEEDED(g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice3), (void**)&dxgi3)) && dxgi3) {
+            dxgi3->Trim();
+            dxgi3->Release();
+        }
+    }
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 struct PaneRT {
@@ -206,17 +236,93 @@ static LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     }
     PaneRT* p = reinterpret_cast<PaneRT*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
-        case WM_USER + 1:
-            if (LOWORD(lp) == WM_RBUTTONUP || LOWORD(lp) == WM_LBUTTONUP) {
-                POINT pt; GetCursorPos(&pt);
+        case WM_USER + 1: {
+            UINT event = LOWORD(lp);
+            if (event == WM_LBUTTONDBLCLK) {
+                wchar_t exePath[MAX_PATH] = {0};
+                GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_SHOWNORMAL);
+                return 0;
+            }
+            if (event == WM_RBUTTONUP) {
+                POINT pt;
+                GetCursorPos(&pt);
                 HMENU hMenu = CreatePopupMenu();
-                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, 1, L"Quit MotionCLI");
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING | MF_DISABLED | MF_GRAYED, 100, L"Motion CLI · Live Wallpaper");
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, 101, L"Open Motion CLI");
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING | (g_manualPaused ? MF_CHECKED : MF_UNCHECKED), 102, g_manualPaused ? L"Resume Wallpaper" : L"Pause Wallpaper");
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING | (g_currentCfg.muteByDefault ? MF_CHECKED : MF_UNCHECKED), 103, L"Mute Audio");
+
+                HMENU hSubAutoPause = CreatePopupMenu();
+                bool isFsOnly = g_currentCfg.pauseOnFullscreen && !g_currentCfg.pauseWhenMaximized && !g_currentCfg.pauseUnlessDesktop;
+                bool isMaxAndFs = g_currentCfg.pauseOnFullscreen && g_currentCfg.pauseWhenMaximized && !g_currentCfg.pauseUnlessDesktop;
+                bool isAnyFocus = g_currentCfg.pauseUnlessDesktop;
+                bool isNever = !g_currentCfg.pauseOnFullscreen && !g_currentCfg.pauseWhenMaximized && !g_currentCfg.pauseUnlessDesktop;
+
+                InsertMenuW(hSubAutoPause, -1, MF_BYPOSITION | MF_STRING | (isMaxAndFs ? MF_CHECKED : MF_UNCHECKED), 201, L"Maximized + Fullscreen (Default)");
+                InsertMenuW(hSubAutoPause, -1, MF_BYPOSITION | MF_STRING | (isFsOnly ? MF_CHECKED : MF_UNCHECKED), 202, L"Fullscreen Only (Games/Videos)");
+                InsertMenuW(hSubAutoPause, -1, MF_BYPOSITION | MF_STRING | (isAnyFocus ? MF_CHECKED : MF_UNCHECKED), 203, L"When any App is Focused");
+                InsertMenuW(hSubAutoPause, -1, MF_BYPOSITION | MF_STRING | (isNever ? MF_CHECKED : MF_UNCHECKED), 204, L"Never Pause (Always Play)");
+
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_POPUP, (UINT_PTR)hSubAutoPause, L"Auto-Pause Behavior");
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_SEPARATOR, 0, nullptr);
+                InsertMenuW(hMenu, -1, MF_BYPOSITION | MF_STRING, 105, L"Exit Motion CLI");
+
                 SetForegroundWindow(hwnd);
                 int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, nullptr);
+                DestroyMenu(hSubAutoPause);
                 DestroyMenu(hMenu);
-                if (cmd == 1) PostQuitMessage(0);
+
+                if (cmd == 101) {
+                    wchar_t exePath[MAX_PATH] = {0};
+                    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                    ShellExecuteW(nullptr, L"open", exePath, nullptr, nullptr, SW_SHOWNORMAL);
+                } else if (cmd == 102) {
+                    g_manualPaused = !g_manualPaused;
+                    if (g_currentEngineState) {
+                        for (auto pane : g_currentEngineState->panes) {
+                            if (pane->engine) {
+                                if (g_manualPaused) pane->engine->Pause();
+                                else pane->engine->Play();
+                            }
+                        }
+                    }
+                } else if (cmd == 103) {
+                    g_currentCfg.muteByDefault = !g_currentCfg.muteByDefault;
+                    g_currentCfg.save();
+                    if (g_currentEngineState) {
+                        for (auto pane : g_currentEngineState->panes) {
+                            pane->muted = g_currentCfg.muteByDefault;
+                            if (pane->engine) pane->engine->SetMuted(pane->muted);
+                        }
+                    }
+                } else if (cmd == 201) {
+                    g_currentCfg.pauseOnFullscreen = true;
+                    g_currentCfg.pauseWhenMaximized = true;
+                    g_currentCfg.pauseUnlessDesktop = false;
+                    g_currentCfg.save();
+                } else if (cmd == 202) {
+                    g_currentCfg.pauseOnFullscreen = true;
+                    g_currentCfg.pauseWhenMaximized = false;
+                    g_currentCfg.pauseUnlessDesktop = false;
+                    g_currentCfg.save();
+                } else if (cmd == 203) {
+                    g_currentCfg.pauseOnFullscreen = true;
+                    g_currentCfg.pauseWhenMaximized = true;
+                    g_currentCfg.pauseUnlessDesktop = true;
+                    g_currentCfg.save();
+                } else if (cmd == 204) {
+                    g_currentCfg.pauseOnFullscreen = false;
+                    g_currentCfg.pauseWhenMaximized = false;
+                    g_currentCfg.pauseUnlessDesktop = false;
+                    g_currentCfg.save();
+                } else if (cmd == 105) {
+                    PostQuitMessage(0);
+                }
             }
             return 0;
+        }
         case WM_SIZE:
         case WM_DISPLAYCHANGE:
             if (p) {
@@ -298,10 +404,14 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     scd.BufferCount = 2;
     scd.Scaling = DXGI_SCALING_STRETCH;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
     scd.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     
-    factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+    HRESULT hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+    if (FAILED(hrSc)) {
+        scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+    }
     factory->Release(); adapter->Release(); dxgiDevice->Release();
 
     IMFMediaEngineClassFactory* mfFactory = nullptr;
@@ -322,7 +432,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     
     rt->engine->SetLoop(TRUE);
     rt->engine->SetMuted(rt->muted);
-    float rate = st.lowEndMode ? 0.5f : st.playbackSpeed;
+    float rate = st.lowEndMode ? 0.5f : (float)st.playbackSpeed;
     if (rate < 0.25f || rate > 4.0f) rate = 1.0f;
     rt->engine->SetPlaybackRate((double)rate);
 
@@ -332,24 +442,36 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     bool lowEnd = st.lowEndMode;
     rt->renderThread = std::thread([rt, w, h, lowEnd]() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        LONGLONG lastPts = -1;
+        const int targetFps = lowEnd ? 24 : 30;
+        const int frameIntervalMs = 1000 / targetFps;
+
         while (rt->threadRunning) {
             if (rt->paused || !rt->engine || !rt->swapChain) {
-                Sleep(16);
+                Sleep(200);
                 continue;
             }
-            LONGLONG pts;
-            if (rt->engine->OnVideoStreamTick(&pts) == S_OK) {
-                IDXGISurface* surf = nullptr;
-                if (SUCCEEDED(rt->swapChain->GetBuffer(0, IID_PPV_ARGS(&surf)))) {
-                    MFVideoNormalizedRect srcR = {0.0f, 0.0f, 1.0f, 1.0f};
-                    RECT dstR = {0, 0, w, h};
-                    MFARGB bg = {0,0,0,255};
-                    rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
-                    surf->Release();
-                    rt->swapChain->Present(lowEnd ? 2 : 1, 0);
+
+            LONGLONG pts = 0;
+            HRESULT hr = rt->engine->OnVideoStreamTick(&pts);
+            if (hr == S_OK) {
+                if (pts != lastPts) {
+                    lastPts = pts;
+                    IDXGISurface* surf = nullptr;
+                    if (SUCCEEDED(rt->swapChain->GetBuffer(0, IID_PPV_ARGS(&surf))) && surf) {
+                        MFVideoNormalizedRect srcR = {0.0f, 0.0f, 1.0f, 1.0f};
+                        RECT dstR = {0, 0, w, h};
+                        MFARGB bg = {0, 0, 0, 255};
+                        rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
+                        surf->Release();
+                        rt->swapChain->Present(1, 0);
+                    }
+                    Sleep(frameIntervalMs);
+                } else {
+                    Sleep(15);
                 }
             } else {
-                Sleep(5);
+                Sleep(20);
             }
         }
         CoUninitialize();
@@ -369,6 +491,7 @@ int runEngineFromConfig() {
     }
 
     Config cfg = Config::load();
+    g_currentCfg = cfg;
     auto panes = buildPanes(cfg);
     logf(L"Panes requested: %d", (int)panes.size());
     if (panes.empty()) { logLine(L"No playable panes - exiting."); return 0; }
@@ -388,6 +511,7 @@ int runEngineFromConfig() {
 
     HWND host = findWallpaperHost();
     EngineState st;
+    g_currentEngineState = &st;
     st.muted = cfg.muteByDefault;
     st.lowEndMode = cfg.lowEndMode;
     st.playbackSpeed = cfg.playbackSpeed;
@@ -395,6 +519,7 @@ int runEngineFromConfig() {
     for (const auto& p : panes) {
         startPane(inst, host, p, st);
     }
+    trimMemory();
 
     HWND trayHwnd = CreateWindowExW(0, kWindowClass, L"MotionCLI Tray", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
     NOTIFYICONDATAW nid = {};
@@ -403,13 +528,24 @@ int runEngineFromConfig() {
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_USER + 1;
-    nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-    wcscpy_s(nid.szTip, L"MotionCLI");
+    HICON hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                   GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR);
+    if (!hIcon) hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APPICON));
+    if (!hIcon) hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    nid.hIcon = hIcon;
+    wcscpy_s(nid.szTip, L"Motion CLI · Live Wallpaper");
     Shell_NotifyIconW(NIM_ADD, &nid);
 
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
 
     bool running = true;
+    DWORD waitTimeout = (DWORD)cfg.occlusionPollMs;
+    if (waitTimeout < 50) waitTimeout = 50;
+    if (waitTimeout > 300) waitTimeout = 150;
+
+    DWORD lastPauseTick = 0;
+    bool wasOccluded = false;
+
     while (running) {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -422,46 +558,84 @@ int runEngineFromConfig() {
         }
         if (!running) break;
 
-        if (WaitForSingleObject(stopEvent, 16) == WAIT_OBJECT_0) {
+        if (WaitForSingleObject(stopEvent, waitTimeout) == WAIT_OBJECT_0) {
             logLine(L"Stop event received.");
             running = false;
         }
-        
-        // Aggressive full-screen and focus occlusion (only pause on maximized/fullscreen)
-        HWND fw = GetForegroundWindow();
-        bool occluded = false;
-        if (fw) {
-            char className[256] = {0};
-            GetClassNameA(fw, className, sizeof(className));
-            if (strcmp(className, "WorkerW") != 0 && 
-                strcmp(className, "Progman") != 0 && 
-                strcmp(className, "#32769") != 0 &&
-                strcmp(className, "Shell_TrayWnd") != 0 &&
-                strcmp(className, "Shell_SecondaryTrayWnd") != 0 &&
-                fw != GetDesktopWindow()) {
-                
-                WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-                if (GetWindowPlacement(fw, &wp)) {
-                    if (wp.showCmd == SW_SHOWMAXIMIZED) {
+
+        bool occluded = g_manualPaused.load();
+
+        // Battery check
+        if (!occluded && g_currentCfg.pauseOnBattery) {
+            SYSTEM_POWER_STATUS sps{};
+            if (GetSystemPowerStatus(&sps) && sps.ACLineStatus == 0) {
+                occluded = true;
+            }
+        }
+
+        // Full-screen, maximized, and app focus occlusion check
+        if (!occluded) {
+            HWND fw = GetForegroundWindow();
+            if (fw) {
+                char className[256] = {0};
+                GetClassNameA(fw, className, sizeof(className));
+                bool isDesktopWindow = (strcmp(className, "WorkerW") == 0 ||
+                                        strcmp(className, "Progman") == 0 ||
+                                        strcmp(className, "SysListView32") == 0 ||
+                                        strcmp(className, "#32769") == 0 ||
+                                        strcmp(className, "Shell_TrayWnd") == 0 ||
+                                        strcmp(className, "Shell_SecondaryTrayWnd") == 0 ||
+                                        fw == GetDesktopWindow());
+
+                if (!isDesktopWindow) {
+                    if (g_currentCfg.pauseUnlessDesktop) {
                         occluded = true;
-                    }
-                }
-                
-                if (!occluded) {
-                    RECT fr;
-                    if (GetWindowRect(fw, &fr)) {
-                        if (fr.left <= 0 && fr.top <= 0 && 
-                            fr.right >= GetSystemMetrics(SM_CXSCREEN) && 
-                            fr.bottom >= GetSystemMetrics(SM_CYSCREEN)) {
+                    } else if (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen) {
+                        WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
+                        if (g_currentCfg.pauseWhenMaximized && GetWindowPlacement(fw, &wp) && wp.showCmd == SW_SHOWMAXIMIZED) {
                             occluded = true;
+                        } else {
+                            RECT fr;
+                            if (GetWindowRect(fw, &fr)) {
+                                HMONITOR hMon = MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST);
+                                MONITORINFO mi = { sizeof(MONITORINFO) };
+                                if (GetMonitorInfoW(hMon, &mi)) {
+                                    int winW = fr.right - fr.left;
+                                    int winH = fr.bottom - fr.top;
+                                    int workW = mi.rcWork.right - mi.rcWork.left;
+                                    int workH = mi.rcWork.bottom - mi.rcWork.top;
+                                    int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+                                    int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+                                    if (g_currentCfg.pauseOnFullscreen && winW >= monW - 8 && winH >= monH - 8) {
+                                        occluded = true;
+                                    } else if (g_currentCfg.pauseWhenMaximized && winW >= workW - 20 && winH >= workH - 20) {
+                                        occluded = true;
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        // Fallback for elevated windows (like Task Manager) where GetWindowRect might fail
-                        occluded = true;
                     }
                 }
             }
         }
+
+        if (occluded != wasOccluded) {
+            wasOccluded = occluded;
+            if (occluded) {
+                lastPauseTick = GetTickCount();
+                trimMemory();
+            }
+        }
+
+        // Deep sleep check if paused for extended time
+        if (occluded && g_currentCfg.occlusionTimeoutSec > 0) {
+            DWORD now = GetTickCount();
+            if (now - lastPauseTick >= (DWORD)(g_currentCfg.occlusionTimeoutSec * 1000)) {
+                trimMemory();
+            }
+        }
+
         for (auto p : st.panes) {
             if (p->paused != occluded) {
                 p->paused = occluded;
@@ -472,6 +646,8 @@ int runEngineFromConfig() {
             }
         }
     }
+
+    g_currentEngineState = nullptr;
 
     Shell_NotifyIconW(NIM_DELETE, &nid);
     if (trayHwnd) DestroyWindow(trayHwnd);

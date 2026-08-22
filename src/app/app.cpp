@@ -58,6 +58,30 @@ App::App() : m_config(Config::load()), m_engine(m_config) {
     m_term.setTitle(L"Motion CLI - live wallpaper");
     m_term.hideCursor();
     m_hw = scanHardware();
+    if (m_config.checkForUpdatesOnLaunch) {
+        startAsyncUpdateCheck();
+    }
+}
+
+App::~App() {
+    if (m_updateThread.joinable()) {
+        m_updateThread.detach();
+    }
+}
+
+void App::startAsyncUpdateCheck() {
+    m_updateCheckFinished = false;
+    std::string repo = m_config.updateRepo;
+    m_updateThread = std::thread([this, repo]() {
+        std::string err;
+        updater::UpdateInfo info;
+        if (updater::checkUpdate(repo, MOTION_VERSION, info, err)) {
+            if (info.isNewer && info.latestVersion != m_config.skipUpdateVersion) {
+                m_updateInfo = info;
+            }
+        }
+        m_updateCheckFinished = true;
+    });
 }
 
 int App::run() {
@@ -73,6 +97,16 @@ int App::run() {
         std::string e;
         m_engine.restart(e);
     }
+
+    if (m_config.checkForUpdatesOnLaunch) {
+        for (int i = 0; i < 15 && !m_updateCheckFinished.load(); ++i) {
+            Sleep(100);
+        }
+        if (m_updateInfo.isNewer && m_updateInfo.latestVersion != m_config.skipUpdateVersion) {
+            showUpdateDialog(false);
+        }
+    }
+
     mainMenu();
     m_term.clearScreen();
     m_term.showCursor();
@@ -189,6 +223,142 @@ void App::help() {
     m_term.readKey();
 }
 
+void App::showUpdateDialog(bool manualCheck) {
+    updater::UpdateInfo info;
+    if (manualCheck || !m_updateInfo.isNewer) {
+        Frame f;
+        draw::banner(f);
+        draw::title(f, "Update Check");
+        f.raw(color::cyan).raw("  Checking for updates online…").raw(color::reset).line();
+        m_term.present(f);
+
+        std::string err;
+        if (!updater::checkUpdate(m_config.updateRepo, MOTION_VERSION, info, err)) {
+            notify("Update Check", {
+                { color::red, "Could not check for updates:" },
+                { color::gray, std::string("  ").append(err) }
+            });
+            return;
+        }
+    } else {
+        info = m_updateInfo;
+    }
+
+    if (!info.isNewer) {
+        notify("Update Check", {
+            { color::green, std::string("✓ Motion CLI is up to date (v" MOTION_VERSION ").") },
+            { color::gray, "You are running the latest release." }
+        });
+        return;
+    }
+
+    m_updateInfo = info;
+
+    std::string sub = "v" MOTION_VERSION " → v" + info.latestVersion;
+    if (!info.changelog.empty()) {
+        sub += "\n\n  What's New:\n";
+        auto lines = wrapText(info.changelog, 72);
+        int maxLines = 8;
+        for (int i = 0; i < (int)lines.size() && i < maxLines; ++i) {
+            sub += "  " + lines[i] + "\n";
+        }
+        if ((int)lines.size() > maxLines) {
+            sub += "  ... (" + std::to_string(lines.size() - maxLines) + " more lines)\n";
+        }
+    }
+
+    Menu menu(m_term, "★ Update Available", sub);
+    menu.setItems({
+        { "Update & Restart now", "download and switch automatically" },
+        { "Open Release on GitHub", "view full release page in browser" },
+        { "Remind me later", "continue using current version" },
+        { "Skip this version", "do not notify for v" + info.latestVersion },
+    });
+    menu.setFooter("↑/↓ move   ⏎ select   esc back");
+
+    int choice = menu.run();
+    if (choice == 0) {
+        performUpdate(info);
+    } else if (choice == 1) {
+        if (!info.htmlUrl.empty()) {
+            ShellExecuteW(nullptr, L"open", widen(info.htmlUrl).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    } else if (choice == 3) {
+        m_config.skipUpdateVersion = info.latestVersion;
+        m_config.save();
+        m_updateInfo = updater::UpdateInfo{};
+        notify("Update Settings", {
+            { color::yellow, std::string("Update v").append(info.latestVersion).append(" will be skipped.") }
+        });
+    }
+}
+
+void App::performUpdate(const updater::UpdateInfo& info) {
+    std::wstring dest = Config::dataDir() + L"\\motioncli_update.exe";
+
+    struct Ctx {
+        App* app;
+        int lastPct;
+        std::string ver;
+    };
+    Ctx ctx{ this, -2, info.latestVersion };
+
+    auto onProgress = +[](int pct, void* vctx) {
+        auto* c = (Ctx*)vctx;
+        if (pct == c->lastPct) return;
+        c->lastPct = pct;
+
+        Frame f;
+        draw::banner(f);
+        draw::title(f, "Updating Motion CLI");
+        f.line();
+        f.raw(color::gray).raw("  Downloading v").raw(c->ver).raw("…").raw(color::reset).line();
+        f.line();
+        if (pct >= 0) {
+            int filled = pct / 5;
+            std::string bar(filled, '#');
+            bar.append(20 - filled, '.');
+            char buf[96];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE, "  [%s] %3d%%", bar.c_str(), pct);
+            f.raw(color::cyan).raw(buf).raw(color::reset).line();
+        }
+        c->app->m_term.present(f);
+    };
+
+    std::string err;
+    if (!updater::downloadUpdate(info.downloadUrl, dest, onProgress, &ctx, err)) {
+        notify("Update Failed", {
+            { color::red, "Failed to download update:" },
+            { color::gray, std::string("  ").append(err) },
+            { color::cyan, "You can download it manually from GitHub Releases." }
+        });
+        return;
+    }
+
+    Frame f;
+    draw::banner(f);
+    draw::title(f, "Updating Motion CLI");
+    f.raw(color::green).raw("  ✓ Download complete! Relaunching…").raw(color::reset).line();
+    m_term.present(f);
+    Sleep(800);
+
+    if (m_engine.isRunning()) {
+        m_engine.stop();
+    }
+
+    if (!updater::applyUpdateAndRestart(dest, err)) {
+        notify("Update Failed", {
+            { color::red, "Failed to apply update:" },
+            { color::gray, std::string("  ").append(err) }
+        });
+        return;
+    }
+
+    m_term.clearScreen();
+    m_term.showCursor();
+    ExitProcess(0);
+}
+
 void App::mainMenu() {
     while (true) {
         const bool running = m_engine.isRunning();
@@ -202,25 +372,49 @@ void App::mainMenu() {
             activeHint = "paused / stopped";
         }
 
-        Menu menu(m_term, "Main menu", "A super-lightweight live wallpaper engine.");
-        menu.setItems({
-            { "Engine Status & Active Wallpaper", activeHint },
-            { "Browse Free Wallpapers",           "download from internet" },
-            { "My Local Wallpapers",              "saved & imported" },
-            { "Setup Multiple Monitors",          "assign a different wallpaper per screen" },
-            { "Settings",                         "" },
-            { "Quit",                             "" },
-        });
+        std::string subtitle = "A super-lightweight live wallpaper engine.";
+        if (m_updateInfo.isNewer) {
+            subtitle = "[★ Update Available: v" + m_updateInfo.latestVersion + " - see top option]";
+        }
+
+        Menu menu(m_term, "Main menu", subtitle);
+        std::vector<MenuItem> items;
+        int updateIndex = -1;
+        if (m_updateInfo.isNewer) {
+            updateIndex = (int)items.size();
+            items.push_back({ "★ Update Available (v" + m_updateInfo.latestVersion + ")", "optional update" });
+        }
+        int activeIndex = (int)items.size();
+        items.push_back({ "Engine Status & Active Wallpaper", activeHint });
+        int browseIndex = (int)items.size();
+        items.push_back({ "Browse Free Wallpapers",           "download from internet" });
+        int myIndex = (int)items.size();
+        items.push_back({ "My Local Wallpapers",              "saved & imported" });
+        int monitorsIndex = (int)items.size();
+        items.push_back({ "Setup Multiple Monitors",          "assign a different wallpaper per screen" });
+        int settingsIndex = (int)items.size();
+        items.push_back({ "Settings",                         "" });
+        int quitIndex = (int)items.size();
+        items.push_back({ "Quit",                             "" });
+
+        menu.setItems(items);
         menu.setFooter("↑/↓ move   ⏎ select   q/esc quit");
 
-        switch (menu.run()) {
-            case 0: activeWallpaper();  break;
-            case 1: browseLibrary();    break;
-            case 2: myWallpapers();     break;
-            case 3: perMonitorSetup();  break;
-            case 4: settings();         break;
-            case 5: case -1:            return;
-            default: break;
+        int choice = menu.run();
+        if (choice == -1 || choice == quitIndex) return;
+
+        if (choice == updateIndex) {
+            showUpdateDialog(false);
+        } else if (choice == activeIndex) {
+            activeWallpaper();
+        } else if (choice == browseIndex) {
+            browseLibrary();
+        } else if (choice == myIndex) {
+            myWallpapers();
+        } else if (choice == monitorsIndex) {
+            perMonitorSetup();
+        } else if (choice == settingsIndex) {
+            settings();
         }
     }
 }
@@ -527,6 +721,7 @@ void App::previewWallpaper(const Wallpaper& w) {
     m_term.present(f);
 
     m_term.readKey();
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
@@ -847,12 +1042,14 @@ void App::settings() {
 
         Menu menu(m_term, "Settings", "");
         menu.setItems({
-            { "Performance",        "smoothness & battery" },
-            { "Wallpapers per load", std::to_string(m_config.libraryCount) },
-            { "Connect Pexels",     m_config.pexelsApiKey.empty() ? "not set" : "connected" },
-            { "Start on login",     autoOn ? "enabled" : "disabled" },
-            { "Default mute",       m_config.muteByDefault ? "on" : "off" },
-            { "Help & about",       "" },
+            { "Performance",          "smoothness & battery" },
+            { "Wallpapers per load",   std::to_string(m_config.libraryCount) },
+            { "Check for updates now", "" },
+            { "Auto-check on startup", m_config.checkForUpdatesOnLaunch ? "on" : "off" },
+            { "Connect Pexels",       m_config.pexelsApiKey.empty() ? "not set" : "connected" },
+            { "Start on login",       autoOn ? "enabled" : "disabled" },
+            { "Default mute",         m_config.muteByDefault ? "on" : "off" },
+            { "Help & about",         "" },
             { "Back", "" },
         });
         menu.setFooter("↑/↓ move   ⏎ edit   esc back");
@@ -869,25 +1066,32 @@ void App::settings() {
                 break;
             }
             case 2:
+                showUpdateDialog(true);
+                break;
+            case 3:
+                m_config.checkForUpdatesOnLaunch = !m_config.checkForUpdatesOnLaunch;
+                m_config.save();
+                break;
+            case 4:
                 connectPexels();
                 break;
-            case 3: {
+            case 5: {
                 bool ok = autoOn ? autostart::disable() : autostart::enable();
                 if (!ok)
                     notify("Settings", { { color::red, "Could not update the login setting." } });
                 break;
             }
-            case 4: {
+            case 6: {
                 m_config.muteByDefault = !m_config.muteByDefault;
                 m_config.save();
                 std::string err;
                 if (m_engine.isRunning()) m_engine.restart(err);
                 break;
             }
-            case 5:
+            case 7:
                 help();
                 break;
-            case 6: case -1:
+            case 8: case -1:
                 return;
             default:
                 break;
@@ -927,6 +1131,13 @@ void App::performanceSettings() {
             }
         };
 
+        auto pauseModeName = [&] {
+            if (m_config.pauseUnlessDesktop) return "When any app focused";
+            if (m_config.pauseOnFullscreen && m_config.pauseWhenMaximized) return "Maximized + Fullscreen";
+            if (m_config.pauseOnFullscreen) return "Fullscreen only";
+            return "Never (always play)";
+        };
+
         char hw[96];
         _snprintf_s(hw, sizeof(hw), _TRUNCATE, "This PC: %s · %d cores · %d GB · %d MB VRAM",
                     tierName(m_hw), m_hw.cores, m_hw.ramGB, m_hw.vramMB);
@@ -943,6 +1154,7 @@ void App::performanceSettings() {
         Menu menu(m_term, "Performance", hw);
         menu.setItems({
             { "Detect my PC (auto-tune)", "" },
+            { "Auto-pause mode",         pauseModeName() },
             { "Quality",                 qName() },
             { "Pause when fullscreen",   m_config.pauseOnFullscreen ? "on" : "off" },
             { "Pause when maximized",    m_config.pauseWhenMaximized ? "on" : "off" },
@@ -962,32 +1174,53 @@ void App::performanceSettings() {
             case 0:
                 autoTune(true);
                 break;
-            case 1:
+            case 1: {
+                if (m_config.pauseUnlessDesktop) {
+                    m_config.pauseOnFullscreen = false;
+                    m_config.pauseWhenMaximized = false;
+                    m_config.pauseUnlessDesktop = false;
+                } else if (m_config.pauseOnFullscreen && m_config.pauseWhenMaximized) {
+                    m_config.pauseOnFullscreen = true;
+                    m_config.pauseWhenMaximized = false;
+                    m_config.pauseUnlessDesktop = false;
+                } else if (m_config.pauseOnFullscreen) {
+                    m_config.pauseOnFullscreen = true;
+                    m_config.pauseWhenMaximized = true;
+                    m_config.pauseUnlessDesktop = true;
+                } else {
+                    m_config.pauseOnFullscreen = true;
+                    m_config.pauseWhenMaximized = true;
+                    m_config.pauseUnlessDesktop = false;
+                }
+                m_config.save(); restartIfLive();
+                break;
+            }
+            case 2:
                 m_config.quality = (Quality)(((int)m_config.quality + 1) % 4);
                 m_config.save();
                 m_catalogLoaded = false;
                 break;
-            case 2:
+            case 3:
                 m_config.pauseOnFullscreen = !m_config.pauseOnFullscreen;
                 m_config.save(); restartIfLive();
                 break;
-            case 3:
+            case 4:
                 m_config.pauseWhenMaximized = !m_config.pauseWhenMaximized;
                 m_config.save(); restartIfLive();
                 break;
-            case 4:
+            case 5:
                 m_config.pauseUnlessDesktop = !m_config.pauseUnlessDesktop;
                 m_config.save(); restartIfLive();
                 break;
-            case 5:
+            case 6:
                 m_config.pauseOnBattery = !m_config.pauseOnBattery;
                 m_config.save(); restartIfLive();
                 break;
-            case 6:
+            case 7:
                 m_config.lowEndMode = !m_config.lowEndMode;
                 m_config.save(); m_catalogLoaded = false; restartIfLive();
                 break;
-            case 7: {
+            case 8: {
                 static const double steps[] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
                 int idx = 2;
                 for (int i = 0; i < 6; ++i) if (steps[i] == m_config.playbackSpeed) idx = i;
@@ -995,7 +1228,7 @@ void App::performanceSettings() {
                 m_config.save(); restartIfLive();
                 break;
             }
-            case 8: {
+            case 9: {
                 static const int steps[] = { 0, 10, 30, 60, 120, 300 };
                 int idx = 0;
                 for (int i = 0; i < 6; ++i) if (steps[i] == m_config.occlusionTimeoutSec) idx = i;
@@ -1003,7 +1236,7 @@ void App::performanceSettings() {
                 m_config.save(); restartIfLive();
                 break;
             }
-            case 9: case -1:
+            case 10: case -1:
                 return;
             default:
                 break;

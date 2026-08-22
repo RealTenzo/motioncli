@@ -31,9 +31,12 @@ public:
     bool firstRun = true;
     bool pauseOnFullscreen = true;
     bool pauseWhenMaximized = true;
-    bool pauseUnlessDesktop = false;
+    bool pauseUnlessDesktop = true;
     bool pauseOnBattery = false;
     bool lowEndMode = false;
+    bool checkForUpdatesOnLaunch = true;
+    std::string updateRepo = "RealTenzo/motioncli";
+    std::string skipUpdateVersion;
 
     static Config load();
     void save() const;

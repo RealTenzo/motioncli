@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-blue?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.2.1-blue?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows_10%2F11-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/C++-17-blue?style=flat-square" alt="C++17">
@@ -12,176 +12,150 @@
 
 <p align="center">
   A super-lightweight live wallpaper engine for Windows.<br>
-  Keyboard-navigable terminal UI. No Electron. No browser. Powered by native DirectX and Media Foundation.
+  Keyboard-navigable terminal UI. No Electron. No browser. Powered by native DirectX 11 hardware decoding and Media Foundation.
 </p>
 
 ---
 
 ## Why Motion CLI?
 
-| Tool | Per-wallpaper runtime | RAM usage |
-|------|----------------------|-----------|
-| Wallpaper Engine | Chromium webview | ~200-400 MB |
-| Lively Wallpaper | .NET + Chromium | ~150-300 MB |
-| **Motion CLI** | Single MFPlay sink | **~80-120 MB** |
+| Tool | Per-wallpaper runtime | RAM usage | GPU Usage (Active) |
+|------|----------------------|-----------|-------------------|
+| Wallpaper Engine | Chromium webview | ~200-400 MB | ~5-15% |
+| Lively Wallpaper | .NET + Chromium | ~150-300 MB | ~6-18% |
+| **Motion CLI** | Native Direct3D 11 + MediaEngine | **~40-80 MB** | **< 1% (0% when paused)** |
 
-One small detached process. Hardware-decoded video. No JS engine, no compositor, no per-frame CPU churn.
+One small detached process. Native GPU hardware-accelerated video decoding (NVDEC / Intel QuickSync / AMD VCN). No JS engine, no browser overhead, zero per-frame CPU churn.
 
 ## Features
 
 <img src="https://img.shields.io/badge/TUI-WASD%20%2F%20Arrow%20keys-0d1117?style=for-the-badge&labelColor=238636" alt="TUI">
 <img src="https://img.shields.io/badge/Library-MoeWalls_1000%2B-0d1117?style=for-the-badge&labelColor=1f6feb" alt="Library">
-<img src="https://img.shields.io/badge/Preview-In--browser-0d1117?style=for-the-badge&labelColor=8957e5" alt="Preview">
-<img src="https://img.shields.io/badge/Cache-Download_1x-0d1117?style=for-the-badge&labelColor=da3633" alt="Cache">
-<img src="https://img.shields.io/badge/Per--Monitor-Yes-0d1117?style=for-the-badge&labelColor=f0883e" alt="Per-Monitor">
-<img src="https://img.shields.io/badge/Auto--Pause-Fullscreen%20%2F%20Maximized-0d1117?style=for-the-badge&labelColor=3fb950" alt="Auto-Pause">
+<img src="https://img.shields.io/badge/Hardware-GPU%20Decoded-0d1117?style=for-the-badge&labelColor=8957e5" alt="Hardware">
+<img src="https://img.shields.io/badge/Auto--Update-Changelog%20Pop--up-0d1117?style=for-the-badge&labelColor=da3633" alt="Auto-Update">
+<img src="https://img.shields.io/badge/Per--Monitor-Span%20%26%20Per--Screen-0d1117?style=for-the-badge&labelColor=f0883e" alt="Per-Monitor">
+<img src="https://img.shields.io/badge/Auto--Pause-Customizable%20Presets-0d1117?style=for-the-badge&labelColor=3fb950" alt="Auto-Pause">
 <img src="https://img.shields.io/badge/Import-MP4%20%2F%20MOV%20%2F%20WMV-0d1117?style=for-the-badge&labelColor=58a6ff" alt="Import">
-<img src="https://img.shields.io/badge/Tray-Mute%20%2F%20Stop-0d1117?style=for-the-badge&labelColor=8b949e" alt="Tray">
+<img src="https://img.shields.io/badge/Tray-Rich%20Menu%20%26%20Logo-0d1117?style=for-the-badge&labelColor=8b949e" alt="Tray">
 <img src="https://img.shields.io/badge/Autostart-Registry-0d1117?style=for-the-badge&labelColor=2ea043" alt="Autostart">
 <img src="https://img.shields.io/badge/Low--End--Mode-Auto%20tune-0d1117?style=for-the-badge&labelColor=f85149" alt="Low-End">
 
+---
+
 ## Getting Started
 
-### Install
+### Download
 
-**winget:**
-```bash
-winget install tenzo.motioncli
-```
-
-**Installer:**
-Download `MotionCLI-Installer.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it, pick your install path, done.
-
-**Portable:**
-Download `motioncli.exe` from [Releases](https://github.com/tenzo/motioncli/releases). Run it directly -- no install needed.
+* **Universal Web Installer:** Download [`MotionCLI-Installer.exe`](https://github.com/RealTenzo/motioncli/releases/latest/download/MotionCLI-Installer.exe) from [Releases](https://github.com/RealTenzo/motioncli/releases). Automatically installs and sets up Start Menu + Desktop shortcuts and adds `motioncli` to your PATH.
+* **Standalone Portable:** Download [`motioncli_portable.exe`](https://github.com/RealTenzo/motioncli/releases/latest/download/motioncli_portable.exe) from [Releases](https://github.com/RealTenzo/motioncli/releases). Run it directly anywhere — no install needed.
 
 ### Build from source
 
-**Prerequisites:** Visual Studio 2022+ with CMake support, Windows 10/11 SDK.
+**Prerequisites:** Visual Studio 2022+ with C++ CMake tools, Windows 10/11 SDK.
 
-**Option A -- Visual Studio:**
-1. `File > Open > Folder` and select the `motioncli` directory
-2. VS auto-configures CMake -- pick the `motioncli.exe` target
-3. Press `F5`
+**1-Click Build Script:**
+```cmd
+build_release.bat
+```
+Produces `dist/motioncli_portable.exe`, `dist/MotionCLI-Installer.exe`, and `dist/version.json` ready for release.
 
-**Option B -- Command line:**
+**Or via CMake directly:**
 ```bash
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-The executable will be at `build/Release/motioncli.exe`.
-
-> Links only against Windows SDK libraries (`winhttp`, `mfplay`, `mf`, `mfplat`, `mfuuid`, `shlwapi`, `ole32`, `shell32`, `comdlg32`, `dxgi`, `windowscodecs`). No third-party dependencies.
+---
 
 ## Usage
 
-```
+```bash
 motioncli
 ```
 
-On first launch a short guided intro walks you through everything.
+On first launch, a short guided intro walks you through everything.
 
 ### Main Menu
 
 ```
-  Browse Library     ->  online library (search, tabs, preview)
+  Browse Library     ->  online library (search, categories, preview)
   My Wallpapers      ->  everything you've saved or imported
-  Per-monitor setup  ->  assign a different wallpaper to each screen
+  Per-monitor setup  ->  assign different wallpapers to each screen
   Active Wallpaper   ->  stop, restart, mute the current wallpaper
-  Settings           ->  performance, wallpapers-per-load, start-on-login
+  Settings           ->  performance, auto-pause mode, updates, autostart
   Quit
 ```
 
-### Browse Library
+### Auto-Pause Modes
 
-| Key | Action |
-|-----|--------|
-| `W`/`S` or Up/Down | Move |
-| `A`/`D` | Switch category tab (anime, games, landscape, ...) |
-| `/` | Search anything (naruto, sunset, cyberpunk, ...) |
-| `R` | Refresh |
-| `Enter` | Open, then **Download & apply** |
-| `Esc` | Back |
+Under **Settings > Performance > Auto-pause mode** or right-clicking the **System Tray**:
 
-### Performance Settings
-
-Navigate to **Settings > Performance** to configure:
-
-| Setting | Description |
-|---------|-------------|
-| **Detect my PC (auto-tune)** | Probes CPU, RAM, and GPU VRAM via DXGI, sets quality automatically |
-| **Quality** | Auto / High / Medium / Low |
-| **Pause when fullscreen** | Freezes a screen when an app goes fullscreen on it |
-| **Pause when maximized** | Also freezes under maximized windows |
-| **Pause when app focused** | Freezes whenever any app is focused |
-| **Pause on battery** | Saves power when unplugged |
-| **Low-end mode** | Aggressive pausing for weaker hardware |
-| **Playback speed** | 0.5x to 2.0x |
-| **Deep sleep after** | Fully releases resources after N seconds of being paused |
+| Mode | Behavior | Ideal Use Case |
+|------|----------|----------------|
+| **Maximized + Fullscreen** *(Default)* | Keeps playing while multitasking; pauses when an app (like browser) is maximized or fullscreen. | Best balance of aesthetics and GPU saving |
+| **Fullscreen Only** | Keeps playing even behind maximized windows; pauses only in fullscreen games / videos. | Multi-monitor setups & transparent themes |
+| **When any App is Focused** | Pauses whenever any non-desktop window is clicked. | Maximum battery saving |
+| **Never Pause** | Constantly plays without pausing. | Visual showcase / dedicated wallpaper display |
 
 ### System Tray
 
-Right-click the tray icon while a wallpaper is live:
+Right-clicking the Motion CLI tray icon:
 
 ```
-  Motion CLI -- live wallpaper
-  ----------------------------
-  Mute audio
-  Open Motion CLI...
-  ----------------------------
-  Stop wallpaper
+┌────────────────────────────────────────────────────────┐
+│  Motion CLI · Live Wallpaper                           │
+├────────────────────────────────────────────────────────┤
+│  Open Motion CLI                                       │
+│  [ ] Pause Wallpaper / [✓] Resume Wallpaper           │
+│  [ ] Mute Audio                                        │
+│  Auto-Pause Behavior  ▶  [✓] Maximized + Fullscreen    │
+│                          [ ] Fullscreen Only           │
+│                          [ ] When any App is Focused   │
+│                          [ ] Never Pause (Always Play) │
+├────────────────────────────────────────────────────────┤
+│  Exit Motion CLI                                       │
+└────────────────────────────────────────────────────────┘
 ```
+* **Double-click Tray Icon**: Instantly opens and brings forward the Motion CLI TUI.
 
-### Start on login
-
-Toggle **Settings > Start on login**. Adds a per-user `Run` registry entry
-(`HKCU\...\Run\MotionCLI = "<exe>" --startup`). No service, no admin rights.
-
-### CLI Modes
-
-```
-motioncli              # launch the TUI
-motioncli --render     # headless renderer (UI-launched)
-motioncli --startup    # used by the login auto-start entry
-```
+---
 
 ## Project Structure
 
 ```
 motioncli/
-  CMakeLists.txt
-  motion_logo.png
+  CMakeLists.txt            CMake build configuration
+  build_release.bat         1-click release builder & packager
+  version.json              Auto-update version manifest
+  motion_logo.png           Application logo
   src/
-    main.cpp                entry point
-    app/                    application flow, menus
-    core/                   config, hardware, library, wallpaper engine
-    net/                    WinHTTP client, file download
-    tui/                    terminal, menus, in-console image preview
-    util/                   JSON parser/serializer
-  resources/                icons, .rc files
-  build/
-    installer.nsi           NSIS installer script
-  winget/                   winget manifest files
-  public/                   release binaries
+    main.cpp                Entry point
+    app/                    Application flow, menus, update popups
+    core/                   Config, hardware detection, Direct3D 11 engine
+    net/                    WinHTTP client, dynamic version.json updater
+    tui/                    Terminal engine, ASCII art, in-console viewer
+    util/                   JSON parser/serializer, string utilities
+  resources/                App icons (.ico) and Windows resource scripts (.rc)
+  installer/                Native Windows web installer and NSIS scripts
 ```
+
+---
 
 ## Contributing
 
-Contributions are welcome. Fork the repo, make your changes, and open a pull request.
+Contributions are welcome! Fork the repo, make your changes, and open a pull request.
 
 If you fork this project, you **must** disclose that it is a fork:
+> "Based on Motion CLI by tenzo (https://github.com/RealTenzo/motioncli)"
 
-> "Based on Motion CLI by tenzo (https://github.com/tenzo/motioncli)"
-
-See [LICENSE](LICENSE) for full attribution requirements.
+---
 
 ## Credits
 
-Wallpapers are sourced from [MoeWalls](https://moewalls.com). All rights to the wallpapers belong to their respective creators. Motion CLI is an independent client and is not affiliated with MoeWalls.
+Wallpapers are sourced from [MoeWalls](https://moewalls.com). All rights belong to their respective creators. Motion CLI is an independent client and is not affiliated with MoeWalls.
+
+---
 
 ## License
 
-MIT -- (c) 2026 tenzo. See [LICENSE](LICENSE).
-
-Forks and derivative works must retain attribution to the original source.
+MIT — (c) 2026 tenzo. See [LICENSE](LICENSE).

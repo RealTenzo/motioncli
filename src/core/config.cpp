@@ -146,9 +146,12 @@ Config Config::load() {
             cfg.quality            = qualityFrom(j["quality"].asString("auto"));
             cfg.pauseOnFullscreen  = j["pauseOnFullscreen"].asBool(true);
             cfg.pauseWhenMaximized = j["pauseWhenMaximized"].asBool(true);
-            cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(false);
+            cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(true);
             cfg.pauseOnBattery     = j["pauseOnBattery"].asBool(false);
             cfg.lowEndMode         = j["lowEndMode"].asBool(false);
+            cfg.checkForUpdatesOnLaunch = j["checkForUpdatesOnLaunch"].asBool(true);
+            if (j["updateRepo"].isString()) cfg.updateRepo = j["updateRepo"].asString("RealTenzo/motioncli");
+            if (j["skipUpdateVersion"].isString()) cfg.skipUpdateVersion = j["skipUpdateVersion"].asString("");
             cfg.occlusionTimeoutSec = j["occlusionTimeoutSec"].asInt(0);
             if (cfg.occlusionTimeoutSec < 0 || cfg.occlusionTimeoutSec > 300) cfg.occlusionTimeoutSec = 0;
             cfg.occlusionPollMs    = j["occlusionPollMs"].asInt(150);
@@ -209,6 +212,9 @@ void Config::save() const {
     j.set("pauseUnlessDesktop", Json::makeBool(pauseUnlessDesktop));
     j.set("pauseOnBattery",     Json::makeBool(pauseOnBattery));
     j.set("lowEndMode",         Json::makeBool(lowEndMode));
+    j.set("checkForUpdatesOnLaunch", Json::makeBool(checkForUpdatesOnLaunch));
+    j.set("updateRepo",         Json::makeString(updateRepo));
+    j.set("skipUpdateVersion",  Json::makeString(skipUpdateVersion));
     j.set("occlusionTimeoutSec", Json::makeNumber((double)occlusionTimeoutSec));
     j.set("occlusionPollMs",    Json::makeNumber((double)occlusionPollMs));
     j.set("occlusionGraceMs",   Json::makeNumber((double)occlusionGraceMs));

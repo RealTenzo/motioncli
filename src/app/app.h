@@ -5,16 +5,20 @@
 #include "core/wallpaper.h"
 #include "core/monitors.h"
 #include "core/hardware.h"
+#include "net/updater.h"
 
 #include <string>
 #include <utility>
 #include <vector>
+#include <thread>
+#include <atomic>
 
 namespace motion {
 
 class App {
 public:
     App();
+    ~App();
     int run();
 
 private:
@@ -33,6 +37,9 @@ private:
     void performanceSettings();
     void connectPexels();
     void autoTune(bool announce);
+    void startAsyncUpdateCheck();
+    void showUpdateDialog(bool manualCheck = false);
+    void performUpdate(const updater::UpdateInfo& info);
 
     int  pickWallpaper(const std::string& title, const std::string& subtitle);
     bool prepareMedia(const Wallpaper& w, std::wstring& outPath);
@@ -52,6 +59,10 @@ private:
     std::string       m_moeSearch;
     int               m_moeLimit = 0;
     HwInfo            m_hw;
+
+    updater::UpdateInfo m_updateInfo;
+    std::atomic<bool>   m_updateCheckFinished{false};
+    std::thread         m_updateThread;
 };
 
 }
