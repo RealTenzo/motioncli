@@ -31,7 +31,7 @@ public:
     bool firstRun = true;
     bool pauseOnFullscreen = true;
     bool pauseWhenMaximized = true;
-    bool pauseUnlessDesktop = true;
+    bool pauseUnlessDesktop = false;
     bool pauseOnBattery = false;
     bool lowEndMode = false;
     bool checkForUpdatesOnLaunch = true;

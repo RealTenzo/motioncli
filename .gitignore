@@ -11,4 +11,5 @@ build/
 *.log
 Debug/
 Release/
+dist/
 wallpapers/

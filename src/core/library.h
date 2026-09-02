@@ -35,7 +35,6 @@ public:
 
     const std::vector<Wallpaper>& savedWallpapers();
 
-    void loadBuiltin();
     void loadLocalLibrary();
 
     const std::vector<const Wallpaper*>& items() const { return m_merged; }

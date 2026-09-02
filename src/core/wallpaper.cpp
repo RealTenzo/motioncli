@@ -26,17 +26,8 @@ namespace {
 
 const wchar_t* kWindowClass = L"MotionCLI_PaneClass";
 const wchar_t* kStopEventName = L"Local\\MotionCLI_StopEvent";
-
-void logLine(const wchar_t* msg) {
-    wprintf(L"%s\n", msg);
-}
-
-template <typename... Args>
-void logf(const wchar_t* fmt, Args... args) {
-    wchar_t buf[512];
-    _snwprintf_s(buf, _countof(buf), _TRUNCATE, fmt, args...);
-    wprintf(L"%s\n", buf);
-}
+const wchar_t* kReloadEventName = L"Local\\MotionCLI_ReloadEvent";
+const wchar_t* kEngineMutexName = L"Local\\MotionCLI_EngineMutex";
 
 HWND g_progman = nullptr;
 HWND g_workerW = nullptr;
@@ -45,17 +36,16 @@ HWND g_listview = nullptr;
 Config g_currentCfg;
 std::atomic<bool> g_manualPaused{false};
 
-struct EngineState;
-EngineState* g_currentEngineState = nullptr;
+struct PaneRT;
+struct EngineState {
+    std::vector<PaneRT*> panes;
+    bool muted = true;
+    bool lowEndMode = false;
+    float playbackSpeed = 1.0f;
+    ~EngineState();
+};
 
-BOOL CALLBACK enumWorkerWCb(HWND top, LPARAM) {
-    HWND shell = FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr);
-    if (shell) {
-        g_workerW = FindWindowExW(nullptr, top, L"WorkerW", nullptr);
-        g_listview = FindWindowExW(shell, nullptr, L"SysListView32", nullptr);
-    }
-    return TRUE;
-}
+EngineState* g_currentEngineState = nullptr;
 
 void makeIconsTransparent() {
     if (g_listview) {
@@ -67,27 +57,40 @@ void makeIconsTransparent() {
 
 HWND findWallpaperHost() {
     g_progman = FindWindowW(L"Progman", nullptr);
+    if (!g_progman) return nullptr;
+
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, nullptr);
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, nullptr);
     SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, nullptr);
 
-    for (int i = 0; i < 20; ++i) {
-        g_workerW = nullptr;
-        g_listview = nullptr;
-        EnumWindows(enumWorkerWCb, 0);
-        if (g_workerW && IsWindow(g_workerW)) {
-            makeIconsTransparent();
-            ShowWindow(g_workerW, SW_SHOW);
-            SetWindowPos(g_workerW, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            if (g_listview) {
-                UpdateWindow(g_listview);
-                InvalidateRect(g_listview, nullptr, TRUE);
+    for (int retry = 0; retry < 30; ++retry) {
+        HWND shellView = nullptr;
+        EnumWindows([](HWND top, LPARAM lp) -> BOOL {
+            HWND shell = FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr);
+            if (shell) {
+                *reinterpret_cast<HWND*>(lp) = top;
+                g_listview = FindWindowExW(shell, nullptr, L"SysListView32", nullptr);
+                return FALSE;
             }
-            logf(L"Host: WorkerW=0x%p", g_workerW);
-            return g_workerW;
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&shellView));
+
+        if (shellView) {
+            g_workerW = FindWindowExW(nullptr, shellView, L"WorkerW", nullptr);
+            if (g_workerW && IsWindow(g_workerW)) {
+                makeIconsTransparent();
+                ShowWindow(g_workerW, SW_SHOW);
+                SetWindowPos(g_workerW, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                if (g_listview) {
+                    UpdateWindow(g_listview);
+                    InvalidateRect(g_listview, nullptr, TRUE);
+                }
+                return g_workerW;
+            }
         }
         Sleep(50);
     }
 
-    logLine(L"No empty WorkerW found - using Progman as host.");
     makeIconsTransparent();
     return g_progman;
 }
@@ -184,6 +187,21 @@ struct PaneRT {
     std::atomic<bool> threadRunning{false};
     std::thread renderThread;
 
+    void setSource(const std::wstring& newMedia, bool isMuted, float speed) {
+        media = newMedia;
+        muted = isMuted;
+        if (engine) {
+            BSTR url = SysAllocString(media.c_str());
+            engine->SetSource(url);
+            SysFreeString(url);
+            engine->SetLoop(TRUE);
+            engine->SetMuted(muted);
+            if (speed < 0.25f || speed > 4.0f) speed = 1.0f;
+            engine->SetPlaybackRate((double)speed);
+            if (!paused && !g_manualPaused) engine->Play();
+        }
+    }
+
     ~PaneRT() {
         threadRunning = false;
         if (renderThread.joinable()) renderThread.join();
@@ -192,6 +210,11 @@ struct PaneRT {
         if (hwnd) DestroyWindow(hwnd);
     }
 };
+
+EngineState::~EngineState() {
+    for (auto p : panes) delete p;
+    panes.clear();
+}
 
 class EngineNotify : public IMFMediaEngineNotify {
     long m_cRef = 1;
@@ -213,19 +236,21 @@ public:
         return count;
     }
     STDMETHODIMP EventNotify(DWORD event, DWORD_PTR param1, DWORD param2) override {
-        if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY) {
-            if (m_pane && m_pane->engine) m_pane->engine->Play();
+        if (event == MF_MEDIA_ENGINE_EVENT_CANPLAY ||
+            event == MF_MEDIA_ENGINE_EVENT_CANPLAYTHROUGH ||
+            event == MF_MEDIA_ENGINE_EVENT_LOADEDDATA ||
+            event == MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA) {
+            if (m_pane && m_pane->engine && !m_pane->paused && !g_manualPaused) {
+                m_pane->engine->Play();
+            }
+        } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
+            if (m_pane && m_pane->engine) {
+                m_pane->engine->SetCurrentTime(0.0);
+                if (!m_pane->paused && !g_manualPaused) m_pane->engine->Play();
+            }
         }
         return S_OK;
     }
-};
-
-struct EngineState {
-    std::vector<PaneRT*> panes;
-    bool muted = true;
-    bool lowEndMode = false;
-    float playbackSpeed = 1.0f;
-    ~EngineState() { for (auto p : panes) delete p; }
 };
 
 static LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -325,33 +350,33 @@ static LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         }
         case WM_SIZE:
         case WM_DISPLAYCHANGE:
+        case WM_SETTINGCHANGE:
             if (p) {
-                if (msg == WM_DISPLAYCHANGE) {
-                    if (p->isSpan) {
-                        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-                        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-                        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                        int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-                        if (vw <= 0) vw = GetSystemMetrics(SM_CXSCREEN);
-                        if (vh <= 0) vh = GetSystemMetrics(SM_CYSCREEN);
-                        p->absRect = { vx, vy, vx + vw, vy + vh };
-                    } else {
-                        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                        MONITORINFO mi{}; mi.cbSize = sizeof(mi);
-                        if (GetMonitorInfoW(mon, &mi)) p->absRect = mi.rcMonitor;
-                    }
-                    int ax = p->absRect.left, ay = p->absRect.top;
-                    int w  = p->absRect.right - ax, h = p->absRect.bottom - ay;
-                    HWND parent = GetParent(hwnd);
-                    if (parent) {
-                        POINT pt = { ax, ay };
-                        ScreenToClient(parent, &pt);
-                        SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-                    } else {
-                        SetWindowPos(hwnd, nullptr, ax, ay, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
-                    }
+                if (p->isSpan) {
+                    int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                    int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                    int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                    int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                    if (vw <= 0) vw = GetSystemMetrics(SM_CXSCREEN);
+                    if (vh <= 0) vh = GetSystemMetrics(SM_CYSCREEN);
+                    p->absRect = { vx, vy, vx + vw, vy + vh };
+                } else {
+                    HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                    MONITORINFO mi{}; mi.cbSize = sizeof(mi);
+                    if (GetMonitorInfoW(mon, &mi)) p->absRect = mi.rcMonitor;
+                }
+                int ax = p->absRect.left, ay = p->absRect.top;
+                int w  = p->absRect.right - ax, h = p->absRect.bottom - ay;
+                HWND parent = GetParent(hwnd);
+                if (parent) {
+                    POINT pt = { ax, ay };
+                    ScreenToClient(parent, &pt);
+                    SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+                } else {
+                    SetWindowPos(hwnd, nullptr, ax, ay, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 }
             }
+            break;
         case WM_NCHITTEST:
             return HTTRANSPARENT;
         case WM_DESTROY:
@@ -366,18 +391,20 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     int w = def.absRect.right - ax, h = def.absRect.bottom - ay;
     if (w <= 0 || h <= 0) return false;
 
-    HWND hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED, kWindowClass, L"MotionCLI Wallpaper",
-        WS_POPUP | WS_VISIBLE, ax, ay, w, h, nullptr, nullptr, inst, nullptr);
-    if (!hwnd) return false;
-    SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+    HWND parent = host ? host : nullptr;
+    DWORD style = parent ? (WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) : (WS_POPUP | WS_VISIBLE);
+    DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
-    if (host) {
-        SetParent(hwnd, host);
-        SetWindowLongW(hwnd, GWL_STYLE, WS_CHILD | WS_VISIBLE);
-        POINT pt = { ax, ay };
-        ScreenToClient(host, &pt);
-        SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    POINT pt = { ax, ay };
+    if (parent) ScreenToClient(parent, &pt);
+
+    HWND hwnd = CreateWindowExW(
+        exStyle, kWindowClass, L"MotionCLI Wallpaper",
+        style, pt.x, pt.y, w, h, parent, nullptr, inst, nullptr);
+    if (!hwnd) return false;
+
+    if (parent) {
+        SetWindowPos(hwnd, HWND_BOTTOM, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 
     PaneRT* rt = new PaneRT();
@@ -432,23 +459,20 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     
     rt->engine->SetLoop(TRUE);
     rt->engine->SetMuted(rt->muted);
-    float rate = st.lowEndMode ? 0.5f : (float)st.playbackSpeed;
+    float rate = (float)st.playbackSpeed;
     if (rate < 0.25f || rate > 4.0f) rate = 1.0f;
     rt->engine->SetPlaybackRate((double)rate);
 
     notify->Release(); attr->Release(); mfFactory->Release();
 
     rt->threadRunning = true;
-    bool lowEnd = st.lowEndMode;
-    rt->renderThread = std::thread([rt, w, h, lowEnd]() {
+    rt->renderThread = std::thread([rt, w, h]() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         LONGLONG lastPts = -1;
-        const int targetFps = lowEnd ? 24 : 30;
-        const int frameIntervalMs = 1000 / targetFps;
 
         while (rt->threadRunning) {
-            if (rt->paused || !rt->engine || !rt->swapChain) {
-                Sleep(200);
+            if (rt->paused || g_manualPaused || !rt->engine || !rt->swapChain) {
+                Sleep(100);
                 continue;
             }
 
@@ -466,12 +490,11 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
                         surf->Release();
                         rt->swapChain->Present(1, 0);
                     }
-                    Sleep(frameIntervalMs);
                 } else {
-                    Sleep(15);
+                    Sleep(1);
                 }
             } else {
-                Sleep(20);
+                Sleep(2);
             }
         }
         CoUninitialize();
@@ -480,24 +503,64 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     return true;
 }
 
+void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config& cfg) {
+    if (!host || !IsWindow(host)) {
+        host = findWallpaperHost();
+    }
+    auto desiredPanes = buildPanes(cfg);
+    st.muted = cfg.muteByDefault;
+    st.lowEndMode = cfg.lowEndMode;
+    st.playbackSpeed = (float)cfg.playbackSpeed;
+
+    bool needsFullRebuild = (st.panes.size() != desiredPanes.size());
+    if (!needsFullRebuild) {
+        for (size_t i = 0; i < desiredPanes.size(); ++i) {
+            if (st.panes[i]->isSpan != desiredPanes[i].isSpan ||
+                st.panes[i]->media != desiredPanes[i].media) {
+                needsFullRebuild = true;
+                break;
+            }
+        }
+    }
+
+    if (needsFullRebuild) {
+        for (auto p : st.panes) delete p;
+        st.panes.clear();
+        for (const auto& p : desiredPanes) {
+            startPane(inst, host, p, st);
+        }
+    } else {
+        for (size_t i = 0; i < desiredPanes.size(); ++i) {
+            st.panes[i]->setSource(desiredPanes[i].media, st.muted, st.playbackSpeed);
+        }
+    }
+    trimMemory();
+}
+
 }
 
 int runEngineFromConfig() {
-    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"MotionCLI_EngineMutex");
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, kEngineMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        logLine(L"Engine already running.");
-        CloseHandle(mutex);
-        return 0;
+        for (int i = 0; i < 20 && GetLastError() == ERROR_ALREADY_EXISTS; ++i) {
+            Sleep(50);
+            CloseHandle(mutex);
+            mutex = CreateMutexW(nullptr, FALSE, kEngineMutexName);
+        }
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            CloseHandle(mutex);
+            return 0;
+        }
     }
 
     Config cfg = Config::load();
     g_currentCfg = cfg;
-    auto panes = buildPanes(cfg);
-    logf(L"Panes requested: %d", (int)panes.size());
-    if (panes.empty()) { logLine(L"No playable panes - exiting."); return 0; }
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    if (FAILED(hr)) return 1;
+    if (FAILED(hr)) {
+        CloseHandle(mutex);
+        return 1;
+    }
     MFStartup(MF_VERSION);
     initD3D11();
 
@@ -512,14 +575,8 @@ int runEngineFromConfig() {
     HWND host = findWallpaperHost();
     EngineState st;
     g_currentEngineState = &st;
-    st.muted = cfg.muteByDefault;
-    st.lowEndMode = cfg.lowEndMode;
-    st.playbackSpeed = cfg.playbackSpeed;
 
-    for (const auto& p : panes) {
-        startPane(inst, host, p, st);
-    }
-    trimMemory();
+    applyConfigToState(inst, host, st, cfg);
 
     HWND trayHwnd = CreateWindowExW(0, kWindowClass, L"MotionCLI Tray", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
     NOTIFYICONDATAW nid = {};
@@ -537,6 +594,7 @@ int runEngineFromConfig() {
     Shell_NotifyIconW(NIM_ADD, &nid);
 
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
+    HANDLE reloadEvent = CreateEventW(nullptr, FALSE, FALSE, kReloadEventName);
 
     bool running = true;
     DWORD waitTimeout = (DWORD)cfg.occlusionPollMs;
@@ -545,8 +603,21 @@ int runEngineFromConfig() {
 
     DWORD lastPauseTick = 0;
     bool wasOccluded = false;
+    DWORD currentPid = GetCurrentProcessId();
+
+    HANDLE waitHandles[2] = { stopEvent, reloadEvent };
 
     while (running) {
+        DWORD waitRes = MsgWaitForMultipleObjects(2, waitHandles, FALSE, waitTimeout, QS_ALLINPUT);
+        if (waitRes == WAIT_OBJECT_0) {
+            running = false;
+            break;
+        }
+        if (waitRes == WAIT_OBJECT_0 + 1) {
+            g_currentCfg = Config::load();
+            applyConfigToState(inst, host, st, g_currentCfg);
+        }
+
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
@@ -558,14 +629,8 @@ int runEngineFromConfig() {
         }
         if (!running) break;
 
-        if (WaitForSingleObject(stopEvent, waitTimeout) == WAIT_OBJECT_0) {
-            logLine(L"Stop event received.");
-            running = false;
-        }
-
         bool occluded = g_manualPaused.load();
 
-        // Battery check
         if (!occluded && g_currentCfg.pauseOnBattery) {
             SYSTEM_POWER_STATUS sps{};
             if (GetSystemPowerStatus(&sps) && sps.ACLineStatus == 0) {
@@ -573,44 +638,50 @@ int runEngineFromConfig() {
             }
         }
 
-        // Full-screen, maximized, and app focus occlusion check
         if (!occluded) {
             HWND fw = GetForegroundWindow();
             if (fw) {
-                char className[256] = {0};
-                GetClassNameA(fw, className, sizeof(className));
-                bool isDesktopWindow = (strcmp(className, "WorkerW") == 0 ||
-                                        strcmp(className, "Progman") == 0 ||
-                                        strcmp(className, "SysListView32") == 0 ||
-                                        strcmp(className, "#32769") == 0 ||
-                                        strcmp(className, "Shell_TrayWnd") == 0 ||
-                                        strcmp(className, "Shell_SecondaryTrayWnd") == 0 ||
-                                        fw == GetDesktopWindow());
+                DWORD fgPid = 0;
+                GetWindowThreadProcessId(fw, &fgPid);
+                if (fgPid != currentPid) {
+                    char className[256] = {0};
+                    GetClassNameA(fw, className, sizeof(className));
+                    bool isDesktopWindow = (strcmp(className, "WorkerW") == 0 ||
+                                            strcmp(className, "Progman") == 0 ||
+                                            strcmp(className, "SysListView32") == 0 ||
+                                            strcmp(className, "#32769") == 0 ||
+                                            strcmp(className, "Shell_TrayWnd") == 0 ||
+                                            strcmp(className, "Shell_SecondaryTrayWnd") == 0 ||
+                                            strcmp(className, "Windows.UI.Core.CoreWindow") == 0 ||
+                                            strcmp(className, "XamlExplorerHostIslandWindow") == 0 ||
+                                            strcmp(className, "TopLevelWindowForOverflowXamlIsland") == 0 ||
+                                            fw == GetDesktopWindow());
 
-                if (!isDesktopWindow) {
-                    if (g_currentCfg.pauseUnlessDesktop) {
-                        occluded = true;
-                    } else if (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen) {
-                        WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-                        if (g_currentCfg.pauseWhenMaximized && GetWindowPlacement(fw, &wp) && wp.showCmd == SW_SHOWMAXIMIZED) {
+                    if (!isDesktopWindow) {
+                        if (g_currentCfg.pauseUnlessDesktop) {
                             occluded = true;
-                        } else {
-                            RECT fr;
-                            if (GetWindowRect(fw, &fr)) {
-                                HMONITOR hMon = MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST);
-                                MONITORINFO mi = { sizeof(MONITORINFO) };
-                                if (GetMonitorInfoW(hMon, &mi)) {
-                                    int winW = fr.right - fr.left;
-                                    int winH = fr.bottom - fr.top;
-                                    int workW = mi.rcWork.right - mi.rcWork.left;
-                                    int workH = mi.rcWork.bottom - mi.rcWork.top;
-                                    int monW = mi.rcMonitor.right - mi.rcMonitor.left;
-                                    int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+                        } else if (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen) {
+                            WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
+                            if (g_currentCfg.pauseWhenMaximized && GetWindowPlacement(fw, &wp) && wp.showCmd == SW_SHOWMAXIMIZED) {
+                                occluded = true;
+                            } else {
+                                RECT fr;
+                                if (GetWindowRect(fw, &fr)) {
+                                    HMONITOR hMon = MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST);
+                                    MONITORINFO mi = { sizeof(MONITORINFO) };
+                                    if (GetMonitorInfoW(hMon, &mi)) {
+                                        int winW = fr.right - fr.left;
+                                        int winH = fr.bottom - fr.top;
+                                        int workW = mi.rcWork.right - mi.rcWork.left;
+                                        int workH = mi.rcWork.bottom - mi.rcWork.top;
+                                        int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+                                        int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
 
-                                    if (g_currentCfg.pauseOnFullscreen && winW >= monW - 8 && winH >= monH - 8) {
-                                        occluded = true;
-                                    } else if (g_currentCfg.pauseWhenMaximized && winW >= workW - 20 && winH >= workH - 20) {
-                                        occluded = true;
+                                        if (g_currentCfg.pauseOnFullscreen && winW >= monW - 8 && winH >= monH - 8) {
+                                            occluded = true;
+                                        } else if (g_currentCfg.pauseWhenMaximized && winW >= workW - 20 && winH >= workH - 20) {
+                                            occluded = true;
+                                        }
                                     }
                                 }
                             }
@@ -628,7 +699,6 @@ int runEngineFromConfig() {
             }
         }
 
-        // Deep sleep check if paused for extended time
         if (occluded && g_currentCfg.occlusionTimeoutSec > 0) {
             DWORD now = GetTickCount();
             if (now - lastPauseTick >= (DWORD)(g_currentCfg.occlusionTimeoutSec * 1000)) {
@@ -641,7 +711,7 @@ int runEngineFromConfig() {
                 p->paused = occluded;
                 if (p->engine) {
                     if (occluded) p->engine->Pause();
-                    else p->engine->Play();
+                    else if (!g_manualPaused) p->engine->Play();
                 }
             }
         }
@@ -652,6 +722,7 @@ int runEngineFromConfig() {
     Shell_NotifyIconW(NIM_DELETE, &nid);
     if (trayHwnd) DestroyWindow(trayHwnd);
     CloseHandle(stopEvent);
+    CloseHandle(reloadEvent);
     st.panes.clear();
 
     UnregisterClassW(kWindowClass, inst);
@@ -663,7 +734,14 @@ int runEngineFromConfig() {
 }
 
 bool EngineController::restart(std::string& err) {
-    stop();
+    if (isRunning()) {
+        if (HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, kReloadEventName)) {
+            SetEvent(ev);
+            CloseHandle(ev);
+            Sleep(20);
+            return true;
+        }
+    }
 
     wchar_t exePath[MAX_PATH] = {0};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
@@ -675,7 +753,13 @@ bool EngineController::restart(std::string& err) {
     sei.lpParameters = L"--render";
     sei.nShow = SW_HIDE;
     if (ShellExecuteExW(&sei)) {
-        CloseHandle(sei.hProcess);
+        if (sei.hProcess) {
+            for (int i = 0; i < 30; ++i) {
+                if (isRunning()) break;
+                Sleep(50);
+            }
+            CloseHandle(sei.hProcess);
+        }
         return true;
     }
     err = "Failed to start engine process.";
@@ -686,17 +770,19 @@ void EngineController::stop() {
     if (HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName)) {
         SetEvent(ev);
         CloseHandle(ev);
-        Sleep(200);
+        for (int i = 0; i < 40; ++i) {
+            if (!isRunning()) break;
+            Sleep(50);
+        }
     }
 }
 
 bool EngineController::isRunning() const {
-    HANDLE mutex = CreateMutexW(nullptr, FALSE, L"MotionCLI_EngineMutex");
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+    HANDLE mutex = OpenMutexW(MUTEX_ALL_ACCESS, FALSE, kEngineMutexName);
+    if (mutex) {
         CloseHandle(mutex);
         return true;
     }
-    if (mutex) CloseHandle(mutex);
     return false;
 }
 

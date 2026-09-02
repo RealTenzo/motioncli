@@ -93,27 +93,6 @@ bool parseCatalog(const std::string& body, std::vector<Wallpaper>& out, std::str
     return true;
 }
 
-const char* kBuiltinCatalog = R"JSON({
-  "version": 1,
-  "wallpapers": [
-    { "id": "big-buck-bunny", "title": "Big Buck Bunny", "author": "Blender Foundation",
-      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-      "tags": ["animation", "nature", "colorful"], "resolution": "1280x720", "size_mb": 158 },
-    { "id": "elephants-dream", "title": "Elephants Dream", "author": "Blender Foundation",
-      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-      "tags": ["animation", "surreal", "dark"], "resolution": "1280x720", "size_mb": 169 },
-    { "id": "sintel", "title": "Sintel", "author": "Blender Foundation",
-      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
-      "tags": ["animation", "fantasy", "epic"], "resolution": "1280x720", "size_mb": 114 },
-    { "id": "for-bigger-blazes", "title": "For Bigger Blazes", "author": "Google",
-      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4",
-      "tags": ["short", "bright"], "resolution": "1280x720", "size_mb": 2 },
-    { "id": "for-bigger-joyrides", "title": "For Bigger Joyrides", "author": "Google",
-      "url": "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerJoyrides.mp4",
-      "tags": ["short", "drive"], "resolution": "1280x720", "size_mb": 3 }
-  ]
-})JSON";
-
 }
 
 void Library::rebuild() {
@@ -303,14 +282,6 @@ void Library::scanFileSystem() {
     rebuild();
 }
 
-void Library::loadBuiltin() {
-    std::string err;
-    std::vector<Wallpaper> parsed;
-    parseCatalog(kBuiltinCatalog, parsed, err);
-    m_catalog = std::move(parsed);
-    loadLocalLibrary();
-}
-
 void Library::loadLocalLibrary() {
     m_local.clear();
 
@@ -372,6 +343,9 @@ bool Library::importFile(const std::wstring& srcPath, std::string& outId, std::s
     if (dot != std::wstring::npos) { ext = fileName.substr(dot); stem = fileName.substr(0, dot); }
 
     std::string title = narrow(stem);
+    for (char& c : title) if (c == '-' || c == '_') c = ' ';
+    if (!title.empty()) title[0] = (char)toupper((unsigned char)title[0]);
+
     std::string baseId = "local-" + sanitize(narrow(stem));
     std::string id = baseId;
     int n = 1;

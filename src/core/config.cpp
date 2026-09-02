@@ -146,7 +146,7 @@ Config Config::load() {
             cfg.quality            = qualityFrom(j["quality"].asString("auto"));
             cfg.pauseOnFullscreen  = j["pauseOnFullscreen"].asBool(true);
             cfg.pauseWhenMaximized = j["pauseWhenMaximized"].asBool(true);
-            cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(true);
+            cfg.pauseUnlessDesktop = j["pauseUnlessDesktop"].asBool(false);
             cfg.pauseOnBattery     = j["pauseOnBattery"].asBool(false);
             cfg.lowEndMode         = j["lowEndMode"].asBool(false);
             cfg.checkForUpdatesOnLaunch = j["checkForUpdatesOnLaunch"].asBool(true);

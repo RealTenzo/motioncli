@@ -6,7 +6,10 @@ echo          Building Motion CLI Release Assets
 echo =======================================================
 echo.
 
-set CMAKE_EXE="D:\Windows\vs 2022\product\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+set CMAKE_EXE="D:\Windows\Visual studio 2022\Product\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+if not exist %CMAKE_EXE% (
+    set CMAKE_EXE="D:\Windows\vs 2022\product\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+)
 if not exist %CMAKE_EXE% (
     set CMAKE_EXE=cmake
 )

@@ -91,9 +91,7 @@ int App::run() {
         m_config.firstRun = false;
         m_config.save();
     }
-    bool haveWallpaper = !m_config.currentMediaPath.empty() ||
-                         !m_config.monitorAssignments.empty();
-    if (haveWallpaper && !m_engine.isRunning()) {
+    if (!m_engine.isRunning()) {
         std::string e;
         m_engine.restart(e);
     }
@@ -443,15 +441,12 @@ bool App::ensureCatalog(bool forceRefresh) {
         return true;
     }
 
-    m_library.loadBuiltin();
-    m_catalogLoaded = true;
-    notify("Library", {
-        { color::yellow, "Couldn't reach the online library:" },
-        { color::gray,   std::string("  ").append(err) },
-        { color::cyan,   "Showing the built-in clips + your imports instead." },
-        { color::gray,   "Check your connection, then choose ↻ Refresh." },
+    m_catalogLoaded = false;
+    notify("Browse Library", {
+        { color::red,   "Couldn't connect to server." },
+        { color::gray,  std::string("  ").append(err.empty() ? "Check your internet connection and try again." : err) }
     });
-    return true;
+    return false;
 }
 
 int App::pickWallpaper(const std::string& title, const std::string& subtitle) {
@@ -526,7 +521,11 @@ void App::browseLibrary() {
 
         if (choice == Menu::kHotkey) {
             char k = menu.hotkey();
-            if (k == 'r') { ensureCatalog(true); selected = 0; continue; }
+            if (k == 'r') {
+                if (!ensureCatalog(true)) return;
+                selected = 0;
+                continue;
+            }
             if (k == '/') {
                 Frame f;
                 draw::banner(f);
@@ -537,7 +536,7 @@ void App::browseLibrary() {
                 m_term.present(f);
                 m_moeSearch = m_term.readLineAt(13, 3, m_moeSearch);
                 m_moeLimit = 0;
-                ensureCatalog(true);
+                if (!ensureCatalog(true)) return;
                 selected = 0;
                 continue;
             }
@@ -550,14 +549,14 @@ void App::browseLibrary() {
                              : (cur - 1 + kMoeCategoryCount) % kMoeCategoryCount;
             m_config.moeCategory = kMoeCategories[cur];
             m_config.save();
-            ensureCatalog(true);
+            if (!ensureCatalog(true)) return;
             selected = 0;
             continue;
         }
 
         if (choice == loadMoreIdx) {
             m_moeLimit = (m_moeLimit > 0 ? m_moeLimit : m_config.libraryCount) + 24;
-            ensureCatalog(true);
+            if (!ensureCatalog(true)) return;
             selected = loadMoreIdx;
             continue;
         }

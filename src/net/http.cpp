@@ -84,6 +84,8 @@ OpenedRequest openGet(const std::wstring& url, std::string& err,
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!r.session) { err = lastError("WinHttpOpen"); return r; }
 
+    WinHttpSetTimeouts(r.session, 5000, 10000, 10000, 15000);
+
     r.connect = WinHttpConnect(r.session, parts.host.c_str(), parts.port, 0);
     if (!r.connect) { err = lastError("WinHttpConnect"); r.close(); return r; }
 
@@ -192,7 +194,7 @@ bool downloadFile(const std::wstring& url,
     unsigned long long received = 0;
     DWORD avail = 0;
     bool success = true;
-    std::vector<char> chunk;
+    char buffer[65536];
 
     do {
         avail = 0;
@@ -203,25 +205,29 @@ bool downloadFile(const std::wstring& url,
         }
         if (avail == 0) break;
 
-        chunk.resize(avail);
-        DWORD read = 0;
-        if (!WinHttpReadData(r.request, chunk.data(), avail, &read)) {
-            err = lastError("WinHttpReadData");
-            success = false;
-            break;
+        while (avail > 0) {
+            DWORD toRead = avail > sizeof(buffer) ? (DWORD)sizeof(buffer) : avail;
+            DWORD read = 0;
+            if (!WinHttpReadData(r.request, buffer, toRead, &read) || read == 0) {
+                err = lastError("WinHttpReadData");
+                success = false;
+                break;
+            }
+
+            received += read;
+            avail -= read;
+
+            DWORD written = 0;
+            if (!WriteFile(file, buffer, read, &written, nullptr) || written != read) {
+                err = lastError("WriteFile");
+                success = false;
+                break;
+            }
+
+            if (onProgress) onProgress(received, total, progressCtx);
         }
-
-        received += read;
-
-        DWORD written = 0;
-        if (!WriteFile(file, chunk.data(), read, &written, nullptr) || written != read) {
-            err = lastError("WriteFile");
-            success = false;
-            break;
-        }
-
-        if (onProgress) onProgress(received, total, progressCtx);
-    } while (avail > 0);
+        if (!success) break;
+    } while (avail > 0 || true);
 
     CloseHandle(file);
 
