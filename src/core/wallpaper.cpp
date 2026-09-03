@@ -6,6 +6,7 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <dwmapi.h>
 #include <d3d11.h>
 #include <d3d10.h>
 #include <dxgi1_2.h>
@@ -537,6 +538,89 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
     trimMemory();
 }
 
+bool isDesktopWindow(HWND hwnd) {
+    if (!hwnd || hwnd == GetDesktopWindow()) return true;
+    char className[256] = {0};
+    GetClassNameA(hwnd, className, sizeof(className));
+    return (strcmp(className, "WorkerW") == 0 ||
+            strcmp(className, "Progman") == 0 ||
+            strcmp(className, "SysListView32") == 0 ||
+            strcmp(className, "#32769") == 0 ||
+            strcmp(className, "Shell_TrayWnd") == 0 ||
+            strcmp(className, "Shell_SecondaryTrayWnd") == 0 ||
+            strcmp(className, "Windows.UI.Core.CoreWindow") == 0 ||
+            strcmp(className, "XamlExplorerHostIslandWindow") == 0 ||
+            strcmp(className, "TopLevelWindowForOverflowXamlIsland") == 0);
+}
+
+bool isWindowCoveringScreen(HWND hwnd, bool checkMaximized, bool checkFullscreen) {
+    if (!checkMaximized && !checkFullscreen) return false;
+    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+
+    int cloaked = 0;
+    if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
+        return false;
+    }
+
+    if (checkMaximized) {
+        WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
+        if (GetWindowPlacement(hwnd, &wp) && wp.showCmd == SW_SHOWMAXIMIZED) {
+            return true;
+        }
+    }
+
+    RECT fr{};
+    if (GetWindowRect(hwnd, &fr)) {
+        HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (hMon) {
+            MONITORINFO mi = { sizeof(MONITORINFO) };
+            if (GetMonitorInfoW(hMon, &mi)) {
+                int winW = fr.right - fr.left;
+                int winH = fr.bottom - fr.top;
+                int workW = mi.rcWork.right - mi.rcWork.left;
+                int workH = mi.rcWork.bottom - mi.rcWork.top;
+                int monW = mi.rcMonitor.right - mi.rcMonitor.left;
+                int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
+
+                if (checkFullscreen && winW >= monW - 8 && winH >= monH - 8) {
+                    return true;
+                }
+                if (checkMaximized && winW >= workW - 20 && winH >= workH - 20) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+struct OcclusionEnumContext {
+    DWORD currentPid = 0;
+    bool checkMaximized = false;
+    bool checkFullscreen = false;
+    bool foundCovering = false;
+};
+
+BOOL CALLBACK EnumWindowsOcclusionCallback(HWND hwnd, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<OcclusionEnumContext*>(lParam);
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == ctx->currentPid) return TRUE;
+
+    if (isDesktopWindow(hwnd)) {
+        return FALSE;
+    }
+
+    if (isWindowCoveringScreen(hwnd, ctx->checkMaximized, ctx->checkFullscreen)) {
+        ctx->foundCovering = true;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
 }
 
 int runEngineFromConfig() {
@@ -644,49 +728,24 @@ int runEngineFromConfig() {
                 DWORD fgPid = 0;
                 GetWindowThreadProcessId(fw, &fgPid);
                 if (fgPid != currentPid) {
-                    char className[256] = {0};
-                    GetClassNameA(fw, className, sizeof(className));
-                    bool isDesktopWindow = (strcmp(className, "WorkerW") == 0 ||
-                                            strcmp(className, "Progman") == 0 ||
-                                            strcmp(className, "SysListView32") == 0 ||
-                                            strcmp(className, "#32769") == 0 ||
-                                            strcmp(className, "Shell_TrayWnd") == 0 ||
-                                            strcmp(className, "Shell_SecondaryTrayWnd") == 0 ||
-                                            strcmp(className, "Windows.UI.Core.CoreWindow") == 0 ||
-                                            strcmp(className, "XamlExplorerHostIslandWindow") == 0 ||
-                                            strcmp(className, "TopLevelWindowForOverflowXamlIsland") == 0 ||
-                                            fw == GetDesktopWindow());
-
-                    if (!isDesktopWindow) {
+                    if (!isDesktopWindow(fw)) {
                         if (g_currentCfg.pauseUnlessDesktop) {
                             occluded = true;
-                        } else if (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen) {
-                            WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
-                            if (g_currentCfg.pauseWhenMaximized && GetWindowPlacement(fw, &wp) && wp.showCmd == SW_SHOWMAXIMIZED) {
-                                occluded = true;
-                            } else {
-                                RECT fr;
-                                if (GetWindowRect(fw, &fr)) {
-                                    HMONITOR hMon = MonitorFromWindow(fw, MONITOR_DEFAULTTONEAREST);
-                                    MONITORINFO mi = { sizeof(MONITORINFO) };
-                                    if (GetMonitorInfoW(hMon, &mi)) {
-                                        int winW = fr.right - fr.left;
-                                        int winH = fr.bottom - fr.top;
-                                        int workW = mi.rcWork.right - mi.rcWork.left;
-                                        int workH = mi.rcWork.bottom - mi.rcWork.top;
-                                        int monW = mi.rcMonitor.right - mi.rcMonitor.left;
-                                        int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
-
-                                        if (g_currentCfg.pauseOnFullscreen && winW >= monW - 8 && winH >= monH - 8) {
-                                            occluded = true;
-                                        } else if (g_currentCfg.pauseWhenMaximized && winW >= workW - 20 && winH >= workH - 20) {
-                                            occluded = true;
-                                        }
-                                    }
-                                }
-                            }
+                        } else if (isWindowCoveringScreen(fw, g_currentCfg.pauseWhenMaximized, g_currentCfg.pauseOnFullscreen)) {
+                            occluded = true;
                         }
                     }
+                }
+            }
+
+            if (!occluded && (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen)) {
+                OcclusionEnumContext ctx;
+                ctx.currentPid = currentPid;
+                ctx.checkMaximized = g_currentCfg.pauseWhenMaximized;
+                ctx.checkFullscreen = g_currentCfg.pauseOnFullscreen;
+                EnumWindows(EnumWindowsOcclusionCallback, reinterpret_cast<LPARAM>(&ctx));
+                if (ctx.foundCovering) {
+                    occluded = true;
                 }
             }
         }

@@ -47,7 +47,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(motioncli PRIVATE
-    winhttp mf mfplat mfuuid mfreadwrite shlwapi ole32 shell32 comdlg32 dxgi d3d11 windowscodecs)
+    winhttp mf mfplat mfuuid mfreadwrite shlwapi ole32 shell32 comdlg32 dxgi d3d11 windowscodecs dwmapi)
 
 # Terminal-based Interactive Web Installer (Reads version.json directly from GitHub)
 add_executable(MotionCLI-Installer
