@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="motion_logo.png" alt="Motion CLI Logo" width="380">
+  <img src="motion_logo.png?v=1.3.2" alt="Motion CLI Logo" width="380">
 </p>
 
 <h1 align="center">Motion CLI</h1>
