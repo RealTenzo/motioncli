@@ -188,6 +188,13 @@ motioncli/
 
 * Wallpapers are indexed from [MoeWalls](https://moewalls.com). All video and artwork rights remain with their respective artists and creators. Motion CLI is an independent, non-commercial client and is not affiliated with MoeWalls.
 
+### DMCA & Content Removal
+If you are an artist, animator, content creator, or representative from MoeWalls and wish to request the removal of any content, stream link, or indexed wallpaper, **please reach out to me directly on Discord (`@tenzo`) or open a GitHub Issue before filing a formal DMCA takedown**. 
+
+I respect all intellectual property and will immediately remove the requested listings and resolve the issue as fast as possible.
+
+---
+
 ## License
 
 Distributed under the [MIT License](LICENSE). Copyright © 2026 tenzo.

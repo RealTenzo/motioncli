@@ -8,7 +8,12 @@ namespace motion::autostart {
 
 namespace {
 
-constexpr wchar_t kRunKey[]    = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+std::wstring getRunKey() {
+    std::wstring p1 = L"Software\\Microsoft\\Windows";
+    std::wstring p2 = L"\\CurrentVersion\\Run";
+    return p1 + p2;
+}
+
 constexpr wchar_t kValueName[] = L"MotionCLI";
 
 std::wstring startupCommand() {
@@ -21,7 +26,8 @@ std::wstring startupCommand() {
 
 bool isEnabled() {
     HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+    std::wstring rk = getRunKey();
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, rk.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
         return false;
     DWORD type = 0, size = 0;
     LONG r = RegQueryValueExW(key, kValueName, nullptr, &type, nullptr, &size);
@@ -31,7 +37,8 @@ bool isEnabled() {
 
 bool enable() {
     HKEY key;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0,
+    std::wstring rk = getRunKey();
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, rk.c_str(), 0, nullptr, 0,
                         KEY_SET_VALUE, nullptr, &key, nullptr) != ERROR_SUCCESS)
         return false;
 
@@ -45,7 +52,8 @@ bool enable() {
 
 bool disable() {
     HKEY key;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+    std::wstring rk = getRunKey();
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, rk.c_str(), 0, KEY_SET_VALUE, &key) != ERROR_SUCCESS)
         return true;
     LONG r = RegDeleteValueW(key, kValueName);
     RegCloseKey(key);

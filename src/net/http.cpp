@@ -79,7 +79,7 @@ OpenedRequest openGet(const std::wstring& url, std::string& err,
     UrlParts parts = crackUrl(url);
     if (!parts.ok) { err = "Invalid URL"; return r; }
 
-    r.session = WinHttpOpen(L"MotionCLI/0.2",
+    r.session = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MotionCLI/1.3",
                             WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!r.session) { err = lastError("WinHttpOpen"); return r; }
