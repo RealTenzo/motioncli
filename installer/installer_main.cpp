@@ -525,7 +525,10 @@ int main(int argc, char* argv[]) {
     std::string downloadUrl;
     std::string versionStr = "1.2.1";
 
-    if (httpGetString(L"raw.githubusercontent.com", L"/RealTenzo/motioncli/refs/heads/main/version.json", jsonStr)) {
+    if (!httpGetString(L"raw.githubusercontent.com", L"/RealTenzo/motioncli/main/version.json", jsonStr)) {
+        httpGetString(L"raw.githubusercontent.com", L"/RealTenzo/motioncli/refs/heads/main/version.json", jsonStr);
+    }
+    if (!jsonStr.empty()) {
         downloadUrl = extractJsonField(jsonStr, "download_url");
         std::string v = extractJsonField(jsonStr, "version");
         if (!v.empty()) versionStr = v;

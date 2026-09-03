@@ -281,6 +281,8 @@ void App::showUpdateDialog(bool manualCheck) {
         if (!info.htmlUrl.empty()) {
             ShellExecuteW(nullptr, L"open", widen(info.htmlUrl).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
+    } else if (choice == 2 || choice == -1) {
+        m_updateInfo.isNewer = false;
     } else if (choice == 3) {
         m_config.skipUpdateVersion = info.latestVersion;
         m_config.save();

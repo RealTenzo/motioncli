@@ -27,7 +27,7 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   DetailPrint "Fetching latest release from version.json..."
-  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -Command "$v = Invoke-RestMethod -Uri \"https://raw.githubusercontent.com/RealTenzo/motioncli/refs/heads/main/version.json\"; Write-Output $v.download_url"'
+  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -Command "$v = Invoke-RestMethod -Uri \"https://raw.githubusercontent.com/RealTenzo/motioncli/main/version.json\"; Write-Output $v.download_url"'
   Pop $0 ; status
   Pop $1 ; url output
 

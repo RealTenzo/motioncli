@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 # Read version automatically from version.json
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/version.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/version.json")
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/version.json" VER_JSON_CONTENT)
     string(REGEX MATCH "\"version\"[ \t]*:[ \t]*\"([^\"]+)\"" _ "${VER_JSON_CONTENT}")
     if(CMAKE_MATCH_1)

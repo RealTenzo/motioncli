@@ -88,8 +88,17 @@ std::string extractChangelogFromReleaseHtml(const std::string& html) {
 bool isVersionNewer(const std::string& currentVer, const std::string& latestVer) {
     if (currentVer.empty() || currentVer == "dev" || latestVer.empty()) return false;
 
-    auto cur = parseVersionNumbers(currentVer);
-    auto lat = parseVersionNumbers(latestVer);
+    std::string curClean = currentVer;
+    while (!curClean.empty() && (curClean.front() == 'v' || curClean.front() == 'V' || curClean.front() == ' ')) {
+        curClean.erase(curClean.begin());
+    }
+    std::string latClean = latestVer;
+    while (!latClean.empty() && (latClean.front() == 'v' || latClean.front() == 'V' || latClean.front() == ' ')) {
+        latClean.erase(latClean.begin());
+    }
+
+    auto cur = parseVersionNumbers(curClean);
+    auto lat = parseVersionNumbers(latClean);
 
     for (size_t i = 0; i < 3; ++i) {
         if (lat[i] > cur[i]) return true;
@@ -106,11 +115,11 @@ bool checkUpdate(const std::string& repo,
     outInfo.currentVersion = currentVersion;
 
     std::string repoTarget = repo.empty() ? "RealTenzo/motioncli" : repo;
-    std::wstring url = L"https://raw.githubusercontent.com/" + widen(repoTarget) + L"/refs/heads/main/version.json";
+    std::wstring url = L"https://raw.githubusercontent.com/" + widen(repoTarget) + L"/main/version.json";
 
     std::string jsonStr;
     if (!http::getString(url, jsonStr, err)) {
-        url = L"https://raw.githubusercontent.com/" + widen(repoTarget) + L"/main/version.json";
+        url = L"https://raw.githubusercontent.com/" + widen(repoTarget) + L"/refs/heads/main/version.json";
         if (!http::getString(url, jsonStr, err)) {
             return false;
         }
@@ -129,21 +138,28 @@ bool checkUpdate(const std::string& repo,
     }
 
     std::string cleanVer = ver;
-    if (!cleanVer.empty() && (cleanVer[0] == 'v' || cleanVer[0] == 'V')) {
-        cleanVer = cleanVer.substr(1);
+    while (!cleanVer.empty() && (cleanVer.front() == 'v' || cleanVer.front() == 'V' || cleanVer.front() == ' ')) {
+        cleanVer.erase(cleanVer.begin());
     }
 
     outInfo.latestVersion = cleanVer;
     outInfo.downloadUrl = root["download_url"].asString();
     if (outInfo.downloadUrl.empty()) {
-        outInfo.downloadUrl = "https://github.com/" + repoTarget + "/releases/download/v" + cleanVer + "/motioncli_portable.exe";
+        outInfo.downloadUrl = "https://github.com/" + repoTarget + "/releases/download/" + cleanVer + "/motioncli_portable.exe";
     }
-    outInfo.htmlUrl = "https://github.com/" + repoTarget + "/releases/tag/v" + cleanVer;
+    outInfo.htmlUrl = "https://github.com/" + repoTarget + "/releases/tag/" + cleanVer;
     outInfo.title = "Motion CLI v" + cleanVer;
 
     std::string relHtml, relErr;
     if (http::getString(widen(outInfo.htmlUrl), relHtml, relErr)) {
         outInfo.changelog = extractChangelogFromReleaseHtml(relHtml);
+    } else {
+        // Try tag with 'v' prefix if no 'v' tag wasn't found
+        std::string vHtmlUrl = "https://github.com/" + repoTarget + "/releases/tag/v" + cleanVer;
+        if (http::getString(widen(vHtmlUrl), relHtml, relErr)) {
+            outInfo.htmlUrl = vHtmlUrl;
+            outInfo.changelog = extractChangelogFromReleaseHtml(relHtml);
+        }
     }
 
     outInfo.isNewer = isVersionNewer(currentVersion, cleanVer);
@@ -200,27 +216,38 @@ bool applyUpdateAndRestart(const std::wstring& downloadedExePath,
 
     wchar_t tempDir[MAX_PATH] = {0};
     GetTempPathW(MAX_PATH, tempDir);
-    std::wstring scriptPath = std::wstring(tempDir) + L"motioncli_apply_update.cmd";
+    std::wstring scriptPath = std::wstring(tempDir) + L"motioncli_apply_update.bat";
 
-    std::ofstream out(scriptPath.c_str(), std::ios::trunc);
+    std::string dPath = narrow(downloadedExePath);
+    std::string cPath = narrow(currentExe);
+
+    std::ofstream out(scriptPath.c_str(), std::ios::trunc | std::ios::binary);
     if (!out) {
         err = "Could not create update script";
         return false;
     }
 
     out << "@echo off\r\n";
-    out << "setlocal enabledelayedexpansion\r\n";
+    out << "chcp 65001 >nul\r\n";
     out << "timeout /t 1 /nobreak >nul\r\n";
-    out << ":wait_loop\r\n";
-    out << "tasklist /fi \"imagename eq motioncli.exe\" 2>nul | find /i \"motioncli.exe\" >nul\r\n";
-    out << "if %errorlevel%==0 (\r\n";
+    out << "taskkill /f /im motioncli.exe >nul 2>&1\r\n";
+    out << "timeout /t 1 /nobreak >nul\r\n";
+    out << "set RETRY=0\r\n";
+    out << ":copy_loop\r\n";
+    out << "copy /y \"" << dPath << "\" \"" << cPath << "\" >nul 2>&1\r\n";
+    out << "if %errorlevel% equ 0 goto copy_ok\r\n";
+    out << "set /a RETRY+=1\r\n";
+    out << "if %RETRY% leq 10 (\r\n";
     out << "    timeout /t 1 /nobreak >nul\r\n";
-    out << "    goto wait_loop\r\n";
+    out << "    taskkill /f /im motioncli.exe >nul 2>&1\r\n";
+    out << "    goto copy_loop\r\n";
     out << ")\r\n";
-    out << "copy /y \"" << narrow(downloadedExePath) << "\" \"" << narrow(currentExe) << "\" >nul\r\n";
-    out << "if exist \"" << narrow(downloadedExePath) << "\" del /f /q \"" << narrow(downloadedExePath) << "\" >nul\r\n";
-    out << "start \"\" \"" << narrow(currentExe) << "\"\r\n";
-    out << "del \"%~f0\" >nul\r\n";
+    out << "start \"\" \"" << cPath << "\"\r\n";
+    out << "exit /b 1\r\n";
+    out << ":copy_ok\r\n";
+    out << "if exist \"" << dPath << "\" del /f /q \"" << dPath << "\" >nul 2>&1\r\n";
+    out << "start \"\" \"" << cPath << "\"\r\n";
+    out << "del \"%~f0\" >nul 2>&1\r\n";
     out.close();
 
     SHELLEXECUTEINFOW sei = {};
