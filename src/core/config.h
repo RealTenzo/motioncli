@@ -25,6 +25,7 @@ public:
     int occlusionPollMs = 150;
     int occlusionGraceMs = 0;
     int libraryCount = 24;
+    int targetFps = 30;
     unsigned long enginePid = 0;
 
     bool muteByDefault = false;

@@ -163,6 +163,8 @@ Config Config::load() {
             cfg.moeCategory        = j["moeCategory"].asString("");
             cfg.libraryCount       = j["libraryCount"].asInt(24);
             if (cfg.libraryCount < 6 || cfg.libraryCount > 96) cfg.libraryCount = 24;
+            cfg.targetFps          = j["targetFps"].asInt(30);
+            if (cfg.targetFps != 30 && cfg.targetFps != 60) cfg.targetFps = 30;
             cfg.currentWallpaperId = j["currentWallpaperId"].asString();
             if (j["currentMediaPath"].isString())
                 cfg.currentMediaPath = widen(j["currentMediaPath"].asString());
@@ -221,6 +223,7 @@ void Config::save() const {
     j.set("playbackSpeed",      Json::makeNumber(playbackSpeed));
     j.set("moeCategory",        Json::makeString(moeCategory));
     j.set("libraryCount",       Json::makeNumber((double)libraryCount));
+    j.set("targetFps",          Json::makeNumber((double)targetFps));
     j.set("currentWallpaperId", Json::makeString(currentWallpaperId));
     j.set("currentMediaPath",   Json::makeString(narrow(currentMediaPath)));
     j.set("enginePid",          Json::makeNumber((double)enginePid));

@@ -43,6 +43,7 @@ struct EngineState {
     bool muted = true;
     bool lowEndMode = false;
     float playbackSpeed = 1.0f;
+    int targetFps = 30;
     ~EngineState();
 };
 
@@ -186,6 +187,7 @@ struct PaneRT {
     IMFMediaEngine* engine = nullptr;
     
     std::atomic<bool> threadRunning{false};
+    std::atomic<int> targetFps{30};
     std::thread renderThread;
 
     void setSource(const std::wstring& newMedia, bool isMuted, float speed) {
@@ -414,6 +416,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     rt->isSpan = def.isSpan;
     rt->muted = st.muted;
     rt->media = def.media;
+    rt->targetFps.store(st.targetFps);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(rt));
     st.panes.push_back(rt);
 
@@ -471,6 +474,11 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         LONGLONG lastPts = -1;
 
+        LARGE_INTEGER qpcFreq{};
+        QueryPerformanceFrequency(&qpcFreq);
+        LARGE_INTEGER lastPresentQpc{};
+        QueryPerformanceCounter(&lastPresentQpc);
+
         while (rt->threadRunning) {
             if (rt->paused || g_manualPaused || !rt->engine || !rt->swapChain) {
                 Sleep(100);
@@ -481,15 +489,28 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
             HRESULT hr = rt->engine->OnVideoStreamTick(&pts);
             if (hr == S_OK) {
                 if (pts != lastPts) {
-                    lastPts = pts;
-                    IDXGISurface* surf = nullptr;
-                    if (SUCCEEDED(rt->swapChain->GetBuffer(0, IID_PPV_ARGS(&surf))) && surf) {
-                        MFVideoNormalizedRect srcR = {0.0f, 0.0f, 1.0f, 1.0f};
-                        RECT dstR = {0, 0, w, h};
-                        MFARGB bg = {0, 0, 0, 255};
-                        rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
-                        surf->Release();
-                        rt->swapChain->Present(1, 0);
+                    int fps = rt->targetFps.load();
+                    if (fps != 60) fps = 30;
+                    LONGLONG intervalQpc = qpcFreq.QuadPart / fps;
+
+                    LARGE_INTEGER nowQpc{};
+                    QueryPerformanceCounter(&nowQpc);
+
+                    if (nowQpc.QuadPart - lastPresentQpc.QuadPart >= intervalQpc) {
+                        lastPts = pts;
+                        lastPresentQpc = nowQpc;
+
+                        IDXGISurface* surf = nullptr;
+                        if (SUCCEEDED(rt->swapChain->GetBuffer(0, IID_PPV_ARGS(&surf))) && surf) {
+                            MFVideoNormalizedRect srcR = {0.0f, 0.0f, 1.0f, 1.0f};
+                            RECT dstR = {0, 0, w, h};
+                            MFARGB bg = {0, 0, 0, 255};
+                            rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
+                            surf->Release();
+                            rt->swapChain->Present(1, 0);
+                        }
+                    } else {
+                        Sleep(1);
                     }
                 } else {
                     Sleep(1);
@@ -512,6 +533,8 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
     st.muted = cfg.muteByDefault;
     st.lowEndMode = cfg.lowEndMode;
     st.playbackSpeed = (float)cfg.playbackSpeed;
+    st.targetFps = cfg.targetFps == 60 ? 60 : 30;
+    for (auto p : st.panes) p->targetFps.store(st.targetFps);
 
     bool needsFullRebuild = (st.panes.size() != desiredPanes.size());
     if (!needsFullRebuild) {
@@ -557,10 +580,19 @@ bool isWindowCoveringScreen(HWND hwnd, bool checkMaximized, bool checkFullscreen
     if (!checkMaximized && !checkFullscreen) return false;
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
 
+    LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    if ((exStyle & WS_EX_TOOLWINDOW) || (exStyle & WS_EX_TRANSPARENT)) return false;
+
     int cloaked = 0;
     if (SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0) {
         return false;
     }
+
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+    if (!hMon) return false;
+
+    MONITORINFO mi = { sizeof(MONITORINFO) };
+    if (!GetMonitorInfoW(hMon, &mi)) return false;
 
     if (checkMaximized) {
         WINDOWPLACEMENT wp = { sizeof(WINDOWPLACEMENT) };
@@ -571,23 +603,16 @@ bool isWindowCoveringScreen(HWND hwnd, bool checkMaximized, bool checkFullscreen
 
     RECT fr{};
     if (GetWindowRect(hwnd, &fr)) {
-        HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if (hMon) {
-            MONITORINFO mi = { sizeof(MONITORINFO) };
-            if (GetMonitorInfoW(hMon, &mi)) {
-                int winW = fr.right - fr.left;
-                int winH = fr.bottom - fr.top;
-                int workW = mi.rcWork.right - mi.rcWork.left;
-                int workH = mi.rcWork.bottom - mi.rcWork.top;
-                int monW = mi.rcMonitor.right - mi.rcMonitor.left;
-                int monH = mi.rcMonitor.bottom - mi.rcMonitor.top;
-
-                if (checkFullscreen && winW >= monW - 8 && winH >= monH - 8) {
-                    return true;
-                }
-                if (checkMaximized && winW >= workW - 20 && winH >= workH - 20) {
-                    return true;
-                }
+        if (checkFullscreen) {
+            if (fr.left <= mi.rcMonitor.left + 5 && fr.top <= mi.rcMonitor.top + 5 &&
+                fr.right >= mi.rcMonitor.right - 5 && fr.bottom >= mi.rcMonitor.bottom - 5) {
+                return true;
+            }
+        }
+        if (checkMaximized) {
+            if (fr.left <= mi.rcWork.left + 15 && fr.top <= mi.rcWork.top + 15 &&
+                fr.right >= mi.rcWork.right - 15 && fr.bottom >= mi.rcWork.bottom - 15) {
+                return true;
             }
         }
     }
@@ -603,14 +628,14 @@ struct OcclusionEnumContext {
 
 BOOL CALLBACK EnumWindowsOcclusionCallback(HWND hwnd, LPARAM lParam) {
     auto* ctx = reinterpret_cast<OcclusionEnumContext*>(lParam);
-    if (!IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
+    if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return TRUE;
 
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == ctx->currentPid) return TRUE;
 
     if (isDesktopWindow(hwnd)) {
-        return FALSE;
+        return TRUE;
     }
 
     if (isWindowCoveringScreen(hwnd, ctx->checkMaximized, ctx->checkFullscreen)) {

@@ -1157,6 +1157,7 @@ void App::performanceSettings() {
             { "Detect my PC (auto-tune)", "" },
             { "Auto-pause mode",         pauseModeName() },
             { "Quality",                 qName() },
+            { "Target FPS",              m_config.targetFps == 60 ? "60 FPS" : "30 FPS" },
             { "Pause when fullscreen",   m_config.pauseOnFullscreen ? "on" : "off" },
             { "Pause when maximized",    m_config.pauseWhenMaximized ? "on" : "off" },
             { "Pause when app focused",  m_config.pauseUnlessDesktop ? "on" : "off" },
@@ -1202,26 +1203,30 @@ void App::performanceSettings() {
                 m_catalogLoaded = false;
                 break;
             case 3:
-                m_config.pauseOnFullscreen = !m_config.pauseOnFullscreen;
+                m_config.targetFps = (m_config.targetFps == 60) ? 30 : 60;
                 m_config.save(); restartIfLive();
                 break;
             case 4:
-                m_config.pauseWhenMaximized = !m_config.pauseWhenMaximized;
+                m_config.pauseOnFullscreen = !m_config.pauseOnFullscreen;
                 m_config.save(); restartIfLive();
                 break;
             case 5:
-                m_config.pauseUnlessDesktop = !m_config.pauseUnlessDesktop;
+                m_config.pauseWhenMaximized = !m_config.pauseWhenMaximized;
                 m_config.save(); restartIfLive();
                 break;
             case 6:
-                m_config.pauseOnBattery = !m_config.pauseOnBattery;
+                m_config.pauseUnlessDesktop = !m_config.pauseUnlessDesktop;
                 m_config.save(); restartIfLive();
                 break;
             case 7:
+                m_config.pauseOnBattery = !m_config.pauseOnBattery;
+                m_config.save(); restartIfLive();
+                break;
+            case 8:
                 m_config.lowEndMode = !m_config.lowEndMode;
                 m_config.save(); m_catalogLoaded = false; restartIfLive();
                 break;
-            case 8: {
+            case 9: {
                 static const double steps[] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
                 int idx = 2;
                 for (int i = 0; i < 6; ++i) if (steps[i] == m_config.playbackSpeed) idx = i;
@@ -1229,7 +1234,7 @@ void App::performanceSettings() {
                 m_config.save(); restartIfLive();
                 break;
             }
-            case 9: {
+            case 10: {
                 static const int steps[] = { 0, 10, 30, 60, 120, 300 };
                 int idx = 0;
                 for (int i = 0; i < 6; ++i) if (steps[i] == m_config.occlusionTimeoutSec) idx = i;
@@ -1237,7 +1242,7 @@ void App::performanceSettings() {
                 m_config.save(); restartIfLive();
                 break;
             }
-            case 10: case -1:
+            case 11: case -1:
                 return;
             default:
                 break;
