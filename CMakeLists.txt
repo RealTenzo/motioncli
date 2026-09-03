@@ -30,8 +30,7 @@ endif()
 
 file(GLOB_RECURSE MOTION_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/*.cpp")
 
-# Core portable application
-add_executable(motioncli WIN32 ${MOTION_SOURCES} "${CMAKE_SOURCE_DIR}/resources/app.rc")
+add_executable(motioncli WIN32 ${MOTION_SOURCES} "${CMAKE_SOURCE_DIR}/resources/app.rc" "${CMAKE_SOURCE_DIR}/resources/app.manifest")
 
 target_include_directories(motioncli PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
@@ -42,9 +41,9 @@ target_compile_definitions(motioncli PRIVATE
     MOTION_VERSION="${APP_VERSION}")
 
 if(MSVC)
-    target_compile_options(motioncli PRIVATE /W3 /utf-8 /EHsc)
-    target_compile_options(motioncli PRIVATE $<$<CONFIG:Release>:/GL /O2 /Oy2 /Zc:inline /Qpar>)
-    target_link_options(motioncli PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF>)
+    target_compile_options(motioncli PRIVATE /W3 /utf-8 /EHsc /GS /guard:cf)
+    target_compile_options(motioncli PRIVATE $<$<CONFIG:Release>:/GL /O2 /Zc:inline>)
+    target_link_options(motioncli PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /GUARD:CF>)
 endif()
 
 target_link_libraries(motioncli PRIVATE

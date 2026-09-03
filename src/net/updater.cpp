@@ -154,7 +154,6 @@ bool checkUpdate(const std::string& repo,
     if (http::getString(widen(outInfo.htmlUrl), relHtml, relErr)) {
         outInfo.changelog = extractChangelogFromReleaseHtml(relHtml);
     } else {
-        // Try tag with 'v' prefix if no 'v' tag wasn't found
         std::string vHtmlUrl = "https://github.com/" + repoTarget + "/releases/tag/v" + cleanVer;
         if (http::getString(widen(vHtmlUrl), relHtml, relErr)) {
             outInfo.htmlUrl = vHtmlUrl;
@@ -214,51 +213,34 @@ bool applyUpdateAndRestart(const std::wstring& downloadedExePath,
         return false;
     }
 
-    wchar_t tempDir[MAX_PATH] = {0};
-    GetTempPathW(MAX_PATH, tempDir);
-    std::wstring scriptPath = std::wstring(tempDir) + L"motioncli_apply_update.bat";
+    std::wstring oldExe = currentExe + L".old";
+    DeleteFileW(oldExe.c_str());
 
-    std::string dPath = narrow(downloadedExePath);
-    std::string cPath = narrow(currentExe);
+    if (!MoveFileExW(currentExe.c_str(), oldExe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        Sleep(150);
+        if (!MoveFileExW(currentExe.c_str(), oldExe.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            DWORD dw = GetLastError();
+            err = "Failed to prepare update replacement (code " + std::to_string(dw) + ")";
+            return false;
+        }
+    }
 
-    std::ofstream out(scriptPath.c_str(), std::ios::trunc | std::ios::binary);
-    if (!out) {
-        err = "Could not create update script";
+    if (!MoveFileExW(downloadedExePath.c_str(), currentExe.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED)) {
+        DWORD dw = GetLastError();
+        MoveFileExW(oldExe.c_str(), currentExe.c_str(), MOVEFILE_REPLACE_EXISTING);
+        err = "Failed to place new update binary (code " + std::to_string(dw) + ")";
         return false;
     }
 
-    out << "@echo off\r\n";
-    out << "chcp 65001 >nul\r\n";
-    out << "timeout /t 1 /nobreak >nul\r\n";
-    out << "taskkill /f /im motioncli.exe >nul 2>&1\r\n";
-    out << "timeout /t 1 /nobreak >nul\r\n";
-    out << "set RETRY=0\r\n";
-    out << ":copy_loop\r\n";
-    out << "copy /y \"" << dPath << "\" \"" << cPath << "\" >nul 2>&1\r\n";
-    out << "if %errorlevel% equ 0 goto copy_ok\r\n";
-    out << "set /a RETRY+=1\r\n";
-    out << "if %RETRY% leq 10 (\r\n";
-    out << "    timeout /t 1 /nobreak >nul\r\n";
-    out << "    taskkill /f /im motioncli.exe >nul 2>&1\r\n";
-    out << "    goto copy_loop\r\n";
-    out << ")\r\n";
-    out << "start \"\" \"" << cPath << "\"\r\n";
-    out << "exit /b 1\r\n";
-    out << ":copy_ok\r\n";
-    out << "if exist \"" << dPath << "\" del /f /q \"" << dPath << "\" >nul 2>&1\r\n";
-    out << "start \"\" \"" << cPath << "\"\r\n";
-    out << "del \"%~f0\" >nul 2>&1\r\n";
-    out.close();
+    MoveFileExW(oldExe.c_str(), nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
 
     SHELLEXECUTEINFOW sei = {};
     sei.cbSize = sizeof(sei);
-    sei.lpFile = scriptPath.c_str();
-    sei.nShow = SW_HIDE;
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.lpFile = currentExe.c_str();
+    sei.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExW(&sei)) {
-        err = "Failed to launch update process";
-        DeleteFileW(scriptPath.c_str());
+        err = "Failed to launch updated executable";
         return false;
     }
 
