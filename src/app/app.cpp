@@ -416,6 +416,9 @@ void App::mainMenu() {
         } else if (choice == settingsIndex) {
             settings();
         }
+
+        HeapCompact(GetProcessHeap(), 0);
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     }
 }
 
@@ -1050,6 +1053,7 @@ void App::settings() {
             { "Connect Pexels",       m_config.pexelsApiKey.empty() ? "not set" : "connected" },
             { "Start on login",       autoOn ? "enabled" : "disabled" },
             { "Default mute",         m_config.muteByDefault ? "on" : "off" },
+            { "Debug log",            "view & open folder" },
             { "Help & about",         "" },
             { "Back", "" },
         });
@@ -1089,10 +1093,20 @@ void App::settings() {
                 if (m_engine.isRunning()) m_engine.restart(err);
                 break;
             }
-            case 7:
+            case 7: {
+                ShellExecuteW(nullptr, L"open", Config::logsDir().c_str(), nullptr, nullptr, SW_SHOW);
+                notify("Debug Log", {
+                    { color::green, "Opened log folder in File Explorer." },
+                    { color::gray, "Send 'debug.log' to the developer for support:" },
+                    { color::cyan, narrow(Config::logPath()) },
+                    { color::gray, narrow(Config::appDataLogPath()) }
+                });
+                break;
+            }
+            case 8:
                 help();
                 break;
-            case 8: case -1:
+            case 9: case -1:
                 return;
             default:
                 break;

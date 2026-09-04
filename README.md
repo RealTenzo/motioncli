@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="motion_logo.png?v=1.3.3" alt="Motion CLI Logo" width="380">
+  <img src="motion_logo.png?v=1.3.4" alt="Motion CLI Logo" width="380">
 </p>
 
 <h1 align="center">Motion CLI</h1>
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RealTenzo/motioncli/releases"><img src="https://img.shields.io/badge/version-1.3.3-blue?style=flat-square" alt="Version"></a>
+  <a href="https://github.com/RealTenzo/motioncli/releases"><img src="https://img.shields.io/badge/version-1.3.4-blue?style=flat-square" alt="Version"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-lightgrey?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
   <img src="https://img.shields.io/badge/language-C%2B%2B17-00599C?style=flat-square" alt="C++17">

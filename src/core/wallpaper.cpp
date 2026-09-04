@@ -2,6 +2,7 @@
 #include "core/config.h"
 #include "core/monitors.h"
 #include "util/str.h"
+#include "util/log.h"
 #include "resource.h"
 
 #include <windows.h>
@@ -33,9 +34,16 @@ const wchar_t* kEngineMutexName = L"Local\\MotionCLI_EngineMutex";
 HWND g_progman = nullptr;
 HWND g_workerW = nullptr;
 HWND g_listview = nullptr;
+HWND g_defView = nullptr;
 
 Config g_currentCfg;
 std::atomic<bool> g_manualPaused{false};
+
+std::string toHex(uintptr_t val) {
+    char buf[32];
+    _snprintf_s(buf, sizeof(buf), _TRUNCATE, "%08llX", (unsigned long long)val);
+    return buf;
+}
 
 struct PaneRT;
 struct EngineState {
@@ -58,28 +66,68 @@ void makeIconsTransparent() {
 }
 
 HWND findWallpaperHost() {
+    log::info("locatng desktp wallaper host...");
     g_progman = FindWindowW(L"Progman", nullptr);
-    if (!g_progman) return nullptr;
+    if (!g_progman) {
+        g_progman = GetShellWindow();
+    }
+    if (!g_progman) {
+        log::error("progman wnd not foudn");
+        return nullptr;
+    }
+    log::info("found progamn: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
 
-    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, nullptr);
-    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, nullptr);
-    SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, nullptr);
+    DWORD_PTR dummy = 0;
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &dummy);
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &dummy);
+    SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &dummy);
 
     for (int retry = 0; retry < 30; ++retry) {
-        HWND shellView = nullptr;
+        HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
+        if (defViewInProgman) {
+            g_defView = defViewInProgman;
+            g_listview = FindWindowExW(defViewInProgman, nullptr, L"SysListView32", nullptr);
+            g_workerW = nullptr;
+
+            LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
+            if (!(style & WS_CLIPCHILDREN)) {
+                SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
+            }
+            makeIconsTransparent();
+            log::info("attached to progman host on 24h2/25h2: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+            return g_progman;
+        }
+
+        HWND shellContainer = nullptr;
         EnumWindows([](HWND top, LPARAM lp) -> BOOL {
             HWND shell = FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr);
             if (shell) {
                 *reinterpret_cast<HWND*>(lp) = top;
+                g_defView = shell;
                 g_listview = FindWindowExW(shell, nullptr, L"SysListView32", nullptr);
                 return FALSE;
             }
             return TRUE;
-        }, reinterpret_cast<LPARAM>(&shellView));
+        }, reinterpret_cast<LPARAM>(&shellContainer));
 
-        if (shellView) {
-            g_workerW = FindWindowExW(nullptr, shellView, L"WorkerW", nullptr);
+        if (shellContainer) {
+            if (shellContainer == g_progman) {
+                g_workerW = nullptr;
+                LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
+                if (!(style & WS_CLIPCHILDREN)) {
+                    SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
+                }
+                makeIconsTransparent();
+                log::info("attached to progman host on 24h2/25h2: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+                return g_progman;
+            }
+
+            g_workerW = FindWindowExW(nullptr, shellContainer, L"WorkerW", nullptr);
             if (g_workerW && IsWindow(g_workerW)) {
+                LONG_PTR style = GetWindowLongPtrW(g_workerW, GWL_STYLE);
+                if (!(style & WS_CLIPCHILDREN)) {
+                    SetWindowLongPtrW(g_workerW, GWL_STYLE, style | WS_CLIPCHILDREN);
+                }
                 makeIconsTransparent();
                 ShowWindow(g_workerW, SW_SHOW);
                 SetWindowPos(g_workerW, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
@@ -87,13 +135,19 @@ HWND findWallpaperHost() {
                     UpdateWindow(g_listview);
                     InvalidateRect(g_listview, nullptr, TRUE);
                 }
+                log::info("attached to toplevel workerw host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_workerW)));
                 return g_workerW;
             }
+
+            makeIconsTransparent();
+            log::info("using shellcontainer host: 0x" + toHex(reinterpret_cast<uintptr_t>(shellContainer)));
+            return shellContainer;
         }
         Sleep(50);
     }
 
     makeIconsTransparent();
+    log::warn("using progamn as desktp fallback: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
     return g_progman;
 }
 
@@ -135,14 +189,27 @@ IMFDXGIDeviceManager* g_dxgiManager = nullptr;
 UINT g_resetToken = 0;
 
 bool initD3D11() {
-    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-    D3D_FEATURE_LEVEL featureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
+    log::info("initilizing d3d11 devce and context...");
+    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+        D3D_FEATURE_LEVEL_9_3
+    };
     D3D_FEATURE_LEVEL fl;
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 4, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 5, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
     if (FAILED(hr)) {
-        creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 4, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
-        if (FAILED(hr)) return false;
+        log::warn("d3d11 hw devce faild (hr = 0x" + toHex(hr) + "), retry warp softwre");
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, creationFlags, featureLevels, 5, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
+        if (FAILED(hr)) {
+            log::error("d3d11 devce cmpletely faild (hr = 0x" + toHex(hr) + ")");
+            return false;
+        }
+        log::info("d3d11 using warp softwre rasterizr");
+    } else {
+        log::info("d3d11 hw devce created, fl: 0x" + toHex((unsigned int)fl));
     }
 
     ID3D10Multithread* mt = nullptr;
@@ -151,17 +218,37 @@ bool initD3D11() {
         mt->Release();
     }
 
+    IDXGIDevice1* dxgiDev1 = nullptr;
+    if (SUCCEEDED(g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice1), (void**)&dxgiDev1)) && dxgiDev1) {
+        dxgiDev1->SetMaximumFrameLatency(1);
+        dxgiDev1->Release();
+    }
+
     hr = MFCreateDXGIDeviceManager(&g_resetToken, &g_dxgiManager);
-    if (FAILED(hr)) return false;
+    if (FAILED(hr)) {
+        log::error("mfcreatedxgidevicemanager faild (hr = 0x" + toHex(hr) + ")");
+        return false;
+    }
 
     hr = g_dxgiManager->ResetDevice(g_d3dDevice, g_resetToken);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) {
+        log::error("dxgimanager resetdevce faild (hr = 0x" + toHex(hr) + ")");
+        return false;
+    }
+
+    log::info("dxgi devce manager registred ok");
+    return true;
 }
 
 void cleanupD3D11() {
     if (g_dxgiManager) { g_dxgiManager->Release(); g_dxgiManager = nullptr; }
     if (g_d3dContext) { g_d3dContext->Release(); g_d3dContext = nullptr; }
     if (g_d3dDevice) { g_d3dDevice->Release(); g_d3dDevice = nullptr; }
+}
+
+void trimWorkingSet() {
+    HeapCompact(GetProcessHeap(), 0);
+    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 }
 
 void trimMemory() {
@@ -172,7 +259,7 @@ void trimMemory() {
             dxgi3->Release();
         }
     }
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    trimWorkingSet();
 }
 
 struct PaneRT {
@@ -199,6 +286,7 @@ struct PaneRT {
             SysFreeString(url);
             engine->SetLoop(TRUE);
             engine->SetMuted(muted);
+            if (muted) engine->SetVolume(0.0);
             if (speed < 0.25f || speed > 4.0f) speed = 1.0f;
             engine->SetPlaybackRate((double)speed);
             if (!paused && !g_manualPaused) engine->Play();
@@ -246,10 +334,15 @@ public:
             if (m_pane && m_pane->engine && !m_pane->paused && !g_manualPaused) {
                 m_pane->engine->Play();
             }
+        } else if (event == MF_MEDIA_ENGINE_EVENT_PLAYING) {
+            log::info("MediaEngine event: PLAYING");
+        } else if (event == MF_MEDIA_ENGINE_EVENT_ERROR) {
+            log::error("MediaEngine playback error code: " + std::to_string(param1) + ", HRESULT: 0x" + toHex((uintptr_t)param2));
         } else if (event == MF_MEDIA_ENGINE_EVENT_ENDED) {
             if (m_pane && m_pane->engine) {
                 m_pane->engine->SetCurrentTime(0.0);
                 if (!m_pane->paused && !g_manualPaused) m_pane->engine->Play();
+                trimWorkingSet();
             }
         }
         return S_OK;
@@ -374,7 +467,10 @@ static LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 if (parent) {
                     POINT pt = { ax, ay };
                     ScreenToClient(parent, &pt);
-                    SetWindowPos(hwnd, nullptr, pt.x, pt.y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+                    HWND insertAfter = (parent == g_progman && g_defView) ? g_defView : nullptr;
+                    UINT flags = SWP_NOACTIVATE;
+                    if (!insertAfter) flags |= SWP_NOZORDER;
+                    SetWindowPos(hwnd, insertAfter, pt.x, pt.y, w, h, flags);
                 } else {
                     SetWindowPos(hwnd, nullptr, ax, ay, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
                 }
@@ -394,6 +490,25 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     int w = def.absRect.right - ax, h = def.absRect.bottom - ay;
     if (w <= 0 || h <= 0) return false;
 
+    log::info("startng pane: bounds [" + std::to_string(ax) + ", " +
+              std::to_string(ay) + ", " + std::to_string(w) + "x" + std::to_string(h) +
+              "], meda: " + narrow(def.media));
+
+    if (!def.media.empty()) {
+        DWORD attr = GetFileAttributesW(def.media.c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES) {
+            log::error("meda file not found on dsk: " + narrow(def.media));
+        } else {
+            WIN32_FILE_ATTRIBUTE_DATA fad{};
+            if (GetFileAttributesExW(def.media.c_str(), GetFileExInfoStandard, &fad)) {
+                ULARGE_INTEGER sz;
+                sz.LowPart = fad.nFileSizeLow;
+                sz.HighPart = fad.nFileSizeHigh;
+                log::info("meda file foudn, sz: " + std::to_string(sz.QuadPart) + " bytes");
+            }
+        }
+    }
+
     HWND parent = host ? host : nullptr;
     DWORD style = parent ? (WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN) : (WS_POPUP | WS_VISIBLE);
     DWORD exStyle = WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
@@ -404,10 +519,20 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     HWND hwnd = CreateWindowExW(
         exStyle, kWindowClass, L"MotionCLI Wallpaper",
         style, pt.x, pt.y, w, h, parent, nullptr, inst, nullptr);
-    if (!hwnd) return false;
+    if (!hwnd) {
+        log::error("createwindowexw faild, err = " + std::to_string(GetLastError()));
+        return false;
+    }
 
     if (parent) {
-        SetWindowPos(hwnd, HWND_BOTTOM, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        HWND insertAfter = (parent == g_progman && g_defView) ? g_defView : HWND_BOTTOM;
+        SetWindowPos(hwnd, insertAfter, pt.x, pt.y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(hwnd);
+        if (g_defView) {
+            InvalidateRect(g_defView, nullptr, TRUE);
+            UpdateWindow(g_defView);
+        }
     }
 
     PaneRT* rt = new PaneRT();
@@ -420,6 +545,12 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(rt));
     st.panes.push_back(rt);
 
+    int sw = w, sh = h;
+    if (st.lowEndMode && sw > 1280) {
+        sh = (int)((int64_t)sh * 1280 / sw);
+        sw = 1280;
+    }
+
     IDXGIDevice* dxgiDevice = nullptr;
     g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
     IDXGIAdapter* adapter = nullptr;
@@ -428,8 +559,8 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     adapter->GetParent(__uuidof(IDXGIFactory2), (void**)&factory);
 
     DXGI_SWAP_CHAIN_DESC1 scd = {};
-    scd.Width = w;
-    scd.Height = h;
+    scd.Width = sw;
+    scd.Height = sh;
     scd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     scd.SampleDesc.Count = 1;
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -440,8 +571,12 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     
     HRESULT hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
     if (FAILED(hrSc)) {
+        log::warn("createswapchain flip_discard faild (hr = 0x" + toHex(hrSc) + "), retry flip_seq");
         scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
-        factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+        hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+        if (FAILED(hrSc)) {
+            log::error("createswapchain faild cmpletely (hr = 0x" + toHex(hrSc) + ")");
+        }
     }
     factory->Release(); adapter->Release(); dxgiDevice->Release();
 
@@ -455,24 +590,54 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     attr->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, notify);
     attr->SetUINT32(MF_MEDIA_ENGINE_VIDEO_OUTPUT_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM);
 
-    mfFactory->CreateInstance(0, attr, &rt->engine);
+    HRESULT hrMf = mfFactory ? mfFactory->CreateInstance(0, attr, &rt->engine) : E_FAIL;
+    if (FAILED(hrMf)) {
+        log::error("mfmediaengine classfactry createinstnce faild (hr = 0x" + toHex(hrMf) + ")");
+    }
     
     BSTR url = SysAllocString(rt->media.c_str());
-    rt->engine->SetSource(url);
+    HRESULT hrSrc = (rt->engine) ? rt->engine->SetSource(url) : E_FAIL;
     SysFreeString(url);
+    if (FAILED(hrSrc)) {
+        log::error("mediaengine setsrc faild (hr = 0x" + toHex(hrSrc) + ")");
+    }
     
-    rt->engine->SetLoop(TRUE);
-    rt->engine->SetMuted(rt->muted);
-    float rate = (float)st.playbackSpeed;
-    if (rate < 0.25f || rate > 4.0f) rate = 1.0f;
-    rt->engine->SetPlaybackRate((double)rate);
+    if (rt->engine) {
+        rt->engine->SetLoop(TRUE);
+        rt->engine->SetMuted(rt->muted);
+        if (rt->muted) rt->engine->SetVolume(0.0);
+        float rate = (float)st.playbackSpeed;
+        if (rate < 0.25f || rate > 4.0f) rate = 1.0f;
+        rt->engine->SetPlaybackRate((double)rate);
+    }
 
-    notify->Release(); attr->Release(); mfFactory->Release();
+    if (notify) notify->Release();
+    if (attr) attr->Release();
+    if (mfFactory) mfFactory->Release();
 
     rt->threadRunning = true;
-    rt->renderThread = std::thread([rt, w, h]() {
+    rt->renderThread = std::thread([rt, sw, sh]() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         LONGLONG lastPts = -1;
+        bool firstFrameLogged = false;
+        int trimStage = 0;
+        DWORD firstFrameTick = 0;
+
+        int refreshHz = 60;
+        HMONITOR hMon = MonitorFromWindow(rt->hwnd, MONITOR_DEFAULTTONEAREST);
+        if (hMon) {
+            MONITORINFOEXW mix{};
+            mix.cbSize = sizeof(mix);
+            if (GetMonitorInfoW(hMon, &mix)) {
+                DEVMODEW dm{};
+                dm.dmSize = sizeof(dm);
+                if (EnumDisplaySettingsW(mix.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+                    if (dm.dmDisplayFrequency >= 30 && dm.dmDisplayFrequency <= 360) {
+                        refreshHz = (int)dm.dmDisplayFrequency;
+                    }
+                }
+            }
+        }
 
         LARGE_INTEGER qpcFreq{};
         QueryPerformanceFrequency(&qpcFreq);
@@ -481,7 +646,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
 
         while (rt->threadRunning) {
             if (rt->paused || g_manualPaused || !rt->engine || !rt->swapChain) {
-                Sleep(100);
+                Sleep(80);
                 continue;
             }
 
@@ -489,34 +654,63 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
             HRESULT hr = rt->engine->OnVideoStreamTick(&pts);
             if (hr == S_OK) {
                 if (pts != lastPts) {
-                    int fps = rt->targetFps.load();
-                    if (fps != 60) fps = 30;
-                    LONGLONG intervalQpc = qpcFreq.QuadPart / fps;
+                    lastPts = pts;
+
+                    int targetFps = rt->targetFps.load();
+                    if (targetFps != 60) targetFps = 30;
 
                     LARGE_INTEGER nowQpc{};
                     QueryPerformanceCounter(&nowQpc);
 
-                    if (nowQpc.QuadPart - lastPresentQpc.QuadPart >= intervalQpc) {
-                        lastPts = pts;
+                    LONGLONG minIntervalQpc = (qpcFreq.QuadPart / targetFps) - (qpcFreq.QuadPart * 3 / 1000);
+
+                    if (nowQpc.QuadPart - lastPresentQpc.QuadPart >= minIntervalQpc) {
                         lastPresentQpc = nowQpc;
 
                         IDXGISurface* surf = nullptr;
                         if (SUCCEEDED(rt->swapChain->GetBuffer(0, IID_PPV_ARGS(&surf))) && surf) {
                             MFVideoNormalizedRect srcR = {0.0f, 0.0f, 1.0f, 1.0f};
-                            RECT dstR = {0, 0, w, h};
+                            RECT dstR = {0, 0, sw, sh};
                             MFARGB bg = {0, 0, 0, 255};
                             rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
                             surf->Release();
-                            rt->swapChain->Present(1, 0);
+
+                            UINT syncInterval = 1;
+                            if (targetFps <= 30) {
+                                if (refreshHz >= 110) syncInterval = 4;
+                                else if (refreshHz >= 70) syncInterval = 2;
+                                else syncInterval = 2;
+                            }
+
+                            rt->swapChain->Present(syncInterval, 0);
+
+                            if (!firstFrameLogged) {
+                                firstFrameLogged = true;
+                                firstFrameTick = GetTickCount();
+                                log::info("first video frame presented, pts=" + std::to_string(pts) +
+                                          ", mon=" + std::to_string(refreshHz) + "hz, sync=" + std::to_string(syncInterval));
+                            }
                         }
-                    } else {
-                        Sleep(1);
                     }
                 } else {
-                    Sleep(1);
+                    Sleep(4);
                 }
             } else {
-                Sleep(2);
+                Sleep(6);
+            }
+
+            if (firstFrameLogged && trimStage < 3) {
+                DWORD elapsed = GetTickCount() - firstFrameTick;
+                if (trimStage == 0 && elapsed >= 1500) {
+                    trimStage = 1;
+                    trimMemory();
+                } else if (trimStage == 1 && elapsed >= 4000) {
+                    trimStage = 2;
+                    trimWorkingSet();
+                } else if (trimStage == 2 && elapsed >= 8000) {
+                    trimStage = 3;
+                    trimWorkingSet();
+                }
             }
         }
         CoUninitialize();
@@ -563,10 +757,12 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
 
 bool isDesktopWindow(HWND hwnd) {
     if (!hwnd || hwnd == GetDesktopWindow()) return true;
+    if (hwnd == g_progman || hwnd == g_workerW || hwnd == g_defView || hwnd == g_listview) return true;
     char className[256] = {0};
     GetClassNameA(hwnd, className, sizeof(className));
     return (strcmp(className, "WorkerW") == 0 ||
             strcmp(className, "Progman") == 0 ||
+            strcmp(className, "SHELLDLL_DefView") == 0 ||
             strcmp(className, "SysListView32") == 0 ||
             strcmp(className, "#32769") == 0 ||
             strcmp(className, "Shell_TrayWnd") == 0 ||
@@ -649,6 +845,9 @@ BOOL CALLBACK EnumWindowsOcclusionCallback(HWND hwnd, LPARAM lParam) {
 }
 
 int runEngineFromConfig() {
+    log::init(false);
+    log::info("Starting Motion CLI wallpaper engine background service...");
+
     HANDLE mutex = CreateMutexW(nullptr, FALSE, kEngineMutexName);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         for (int i = 0; i < 20 && GetLastError() == ERROR_ALREADY_EXISTS; ++i) {
@@ -657,6 +856,7 @@ int runEngineFromConfig() {
             mutex = CreateMutexW(nullptr, FALSE, kEngineMutexName);
         }
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            log::warn("Engine mutex already held by another process, exiting");
             CloseHandle(mutex);
             return 0;
         }
@@ -665,13 +865,25 @@ int runEngineFromConfig() {
     Config cfg = Config::load();
     g_currentCfg = cfg;
 
+    log::info("Configuration loaded: mode=" + std::string(cfg.mode == WallpaperMode::PerMonitor ? "per-monitor" : "span") +
+              ", targetFps=" + std::to_string(cfg.targetFps) +
+              ", media=" + narrow(cfg.currentMediaPath));
+
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(hr)) {
+        log::error("CoInitializeEx failed (hr = 0x" + toHex(hr) + ")");
         CloseHandle(mutex);
         return 1;
     }
-    MFStartup(MF_VERSION);
-    initD3D11();
+    hr = MFStartup(MF_VERSION);
+    if (FAILED(hr)) {
+        log::error("MFStartup failed (hr = 0x" + toHex(hr) + ") - check if Media Feature Pack is installed");
+    }
+    if (!initD3D11()) {
+        log::error("initD3D11 failed, aborting engine execution");
+        CloseHandle(mutex);
+        return 1;
+    }
 
     HINSTANCE inst = GetModuleHandleW(nullptr);
     WNDCLASSW wc = {};
@@ -682,6 +894,10 @@ int runEngineFromConfig() {
     RegisterClassW(&wc);
 
     HWND host = findWallpaperHost();
+    if (!host) {
+        log::error("findWallpaperHost failed to resolve desktop host");
+    }
+
     EngineState st;
     g_currentEngineState = &st;
 
@@ -703,7 +919,9 @@ int runEngineFromConfig() {
     Shell_NotifyIconW(NIM_ADD, &nid);
 
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
+    if (stopEvent) ResetEvent(stopEvent);
     HANDLE reloadEvent = CreateEventW(nullptr, FALSE, FALSE, kReloadEventName);
+    if (reloadEvent) ResetEvent(reloadEvent);
 
     bool running = true;
     DWORD waitTimeout = (DWORD)cfg.occlusionPollMs;
@@ -711,14 +929,24 @@ int runEngineFromConfig() {
     if (waitTimeout > 300) waitTimeout = 150;
 
     DWORD lastPauseTick = 0;
+    DWORD lastTrimTick = GetTickCount();
     bool wasOccluded = false;
     DWORD currentPid = GetCurrentProcessId();
 
     HANDLE waitHandles[2] = { stopEvent, reloadEvent };
 
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+        char buf[128];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "CRASH! exception code 0x%08X at 0x%p",
+                    ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
+        log::error(buf);
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+
     while (running) {
         DWORD waitRes = MsgWaitForMultipleObjects(2, waitHandles, FALSE, waitTimeout, QS_ALLINPUT);
         if (waitRes == WAIT_OBJECT_0) {
+            log::info("stopEvent signaled, shutdwn engine");
             running = false;
             break;
         }
@@ -730,6 +958,7 @@ int runEngineFromConfig() {
         MSG msg;
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
+                log::info("WM_QUIT recved, shutdwn engine");
                 running = false;
                 break;
             }
@@ -799,6 +1028,12 @@ int runEngineFromConfig() {
                 }
             }
         }
+
+        DWORD nowTrim = GetTickCount();
+        if (nowTrim - lastTrimTick >= 10000) {
+            lastTrimTick = nowTrim;
+            trimWorkingSet();
+        }
     }
 
     g_currentEngineState = nullptr;
@@ -807,6 +1042,7 @@ int runEngineFromConfig() {
     if (trayHwnd) DestroyWindow(trayHwnd);
     CloseHandle(stopEvent);
     CloseHandle(reloadEvent);
+    for (auto p : st.panes) delete p;
     st.panes.clear();
 
     UnregisterClassW(kWindowClass, inst);
@@ -814,6 +1050,7 @@ int runEngineFromConfig() {
     MFShutdown();
     CoUninitialize();
     CloseHandle(mutex);
+    log::info("engine cleanly terminated");
     return 0;
 }
 

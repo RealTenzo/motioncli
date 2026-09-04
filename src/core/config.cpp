@@ -116,6 +116,26 @@ std::wstring Config::userLibraryPath() {
     return dataDir() + L"\\library.json";
 }
 
+std::wstring Config::logsDir() {
+    std::wstring dir = dataDir() + L"\\logs";
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir;
+}
+
+std::wstring Config::logPath() {
+    return logsDir() + L"\\debug.log";
+}
+
+std::wstring Config::appDataLogPath() {
+    std::wstring root = appDataRoot();
+    if (root.empty()) return logPath();
+    std::wstring mcRoot = root + L"\\MotionCLI";
+    std::wstring dir = mcRoot + L"\\logs";
+    CreateDirectoryW(mcRoot.c_str(), nullptr);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\debug.log";
+}
+
 Config Config::load() {
     Config cfg;
 

@@ -52,15 +52,17 @@ target_link_libraries(motioncli PRIVATE
 # Terminal-based Interactive Web Installer (Reads version.json directly from GitHub)
 add_executable(MotionCLI-Installer
     "${CMAKE_SOURCE_DIR}/installer/installer_main.cpp"
-    "${CMAKE_SOURCE_DIR}/installer/installer.rc")
+    "${CMAKE_SOURCE_DIR}/installer/installer.rc"
+    "${CMAKE_SOURCE_DIR}/resources/app.manifest")
 
 target_compile_definitions(MotionCLI-Installer PRIVATE
     UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX
     MOTION_VERSION="${APP_VERSION}")
 
 if(MSVC)
-    target_compile_options(MotionCLI-Installer PRIVATE /W3 /utf-8 /EHsc)
-    target_compile_options(MotionCLI-Installer PRIVATE $<$<CONFIG:Release>:/O2 /Oy2 /Zc:inline>)
+    target_compile_options(MotionCLI-Installer PRIVATE /W3 /utf-8 /EHsc /GS /guard:cf)
+    target_compile_options(MotionCLI-Installer PRIVATE $<$<CONFIG:Release>:/GL /O2 /Zc:inline>)
+    target_link_options(MotionCLI-Installer PRIVATE $<$<CONFIG:Release>:/LTCG /OPT:REF /OPT:ICF /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA /GUARD:CF /MANIFESTUAC:"level='asInvoker' uiAccess='false'">)
 endif()
 
 target_link_libraries(MotionCLI-Installer PRIVATE

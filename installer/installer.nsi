@@ -26,20 +26,14 @@ RequestExecutionLevel user
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  DetailPrint "Fetching latest release from version.json..."
-  nsExec::ExecToStack 'powershell -NoProfile -ExecutionPolicy Bypass -Command "$v = Invoke-RestMethod -Uri \"https://raw.githubusercontent.com/RealTenzo/motioncli/main/version.json\"; Write-Output $v.download_url"'
-  Pop $0 ; status
-  Pop $1 ; url output
-
-  ; Clean URL string
-  StrCpy $1 $1 -2
-
-  ${If} $1 == ""
-    StrCpy $1 "https://github.com/RealTenzo/motioncli/releases/latest/download/motioncli_portable.exe"
+  DetailPrint "Downloading latest Motion CLI v1.3.4..."
+  nsExec::ExecToLog 'curl.exe -f -s -L "https://github.com/RealTenzo/motioncli/releases/download/1.3.4/motioncli_portable.exe" -o "$INSTDIR\motioncli.exe"'
+  ${If} ${FileExists} "$INSTDIR\motioncli.exe"
+    DetailPrint "Download verified."
+  ${Else}
+    DetailPrint "Retrying latest download..."
+    nsExec::ExecToLog 'curl.exe -f -s -L "https://github.com/RealTenzo/motioncli/releases/latest/download/motioncli_portable.exe" -o "$INSTDIR\motioncli.exe"'
   ${EndIf}
-
-  DetailPrint "Downloading latest Motion CLI..."
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri \"$1\" -OutFile \"$INSTDIR\motioncli.exe\""'
 
   CreateShortcut "$SMPROGRAMS\Motion CLI.lnk" "$INSTDIR\motioncli.exe"
   CreateShortcut "$DESKTOP\Motion CLI.lnk" "$INSTDIR\motioncli.exe"

@@ -46,6 +46,9 @@ public:
     static std::wstring wallpapersDir();
     static std::wstring configPath();
     static std::wstring userLibraryPath();
+    static std::wstring logsDir();
+    static std::wstring logPath();
+    static std::wstring appDataLogPath();
 };
 
 }

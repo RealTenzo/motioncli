@@ -1,5 +1,6 @@
 #include "app/app.h"
 #include "core/wallpaper.h"
+#include "util/log.h"
 
 #include <windows.h>
 #include <shellapi.h>
@@ -10,14 +11,6 @@
 #include <vector>
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
-    wchar_t selfExe[MAX_PATH] = {0};
-    if (GetModuleFileNameW(nullptr, selfExe, MAX_PATH)) {
-        std::wstring oldExe = std::wstring(selfExe) + L".old";
-        DeleteFileW(oldExe.c_str());
-    }
-
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::wstring> args;
@@ -32,6 +25,15 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
             isEngine = true;
             break;
         }
+    }
+
+    motion::log::init(!isEngine);
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
+    wchar_t selfExe[MAX_PATH] = {0};
+    if (GetModuleFileNameW(nullptr, selfExe, MAX_PATH)) {
+        std::wstring oldExe = std::wstring(selfExe) + L".old";
+        DeleteFileW(oldExe.c_str());
     }
 
     if (isEngine) {
