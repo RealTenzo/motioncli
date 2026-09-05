@@ -22,12 +22,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "tenzo"
             VALUE "FileDescription",  "Motion CLI - Native Live Wallpaper Engine"
-            VALUE "FileVersion",      "1.3.4.0"
+            VALUE "FileVersion",      "1.3.5.0"
             VALUE "InternalName",     "motioncli"
             VALUE "LegalCopyright",   "Copyright (C) 2026 tenzo"
             VALUE "OriginalFilename", "motioncli.exe"
             VALUE "ProductName",      "Motion CLI"
-            VALUE "ProductVersion",   "1.3.4"
+            VALUE "ProductVersion",   "1.3.5"
         END
     END
     BLOCK "VarFileInfo"

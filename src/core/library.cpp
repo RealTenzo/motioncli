@@ -260,6 +260,7 @@ void Library::scanFileSystem() {
             if (dot == std::string::npos) continue;
             std::string ext = name.substr(dot);
             if (ext != ".mp4" && ext != ".webm" && ext != ".mov" && ext != ".mkv") continue;
+            if (name.find(".opt.") != std::string::npos) continue;
 
             std::string stem = name.substr(0, dot);
             std::string title = stem;

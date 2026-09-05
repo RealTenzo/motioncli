@@ -14,9 +14,12 @@
 #include <dxgi1_3.h>
 #include <mfapi.h>
 #include <mfidl.h>
+#include <mfreadwrite.h>
 #include <mfmediaengine.h>
 
+#include <timeapi.h>
 #include <vector>
+#include <set>
 #include <thread>
 #include <atomic>
 #include <cstdio>
@@ -65,6 +68,21 @@ void makeIconsTransparent() {
     }
 }
 
+DWORD getWindowsBuildNumber() {
+    typedef LONG(NTAPI* pfnRtlGetVersion)(PRTL_OSVERSIONINFOW);
+    HMODULE hNt = GetModuleHandleW(L"ntdll.dll");
+    if (hNt) {
+        pfnRtlGetVersion rtlGetVersion = (pfnRtlGetVersion)GetProcAddress(hNt, "RtlGetVersion");
+        if (rtlGetVersion) {
+            RTL_OSVERSIONINFOW rovi = { sizeof(rovi) };
+            if (rtlGetVersion(&rovi) == 0) {
+                return rovi.dwBuildNumber;
+            }
+        }
+    }
+    return 0;
+}
+
 HWND findWallpaperHost() {
     log::info("locatng desktp wallaper host...");
     g_progman = FindWindowW(L"Progman", nullptr);
@@ -77,12 +95,10 @@ HWND findWallpaperHost() {
     }
     log::info("found progamn: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
 
-    DWORD_PTR dummy = 0;
-    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &dummy);
-    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &dummy);
-    SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &dummy);
+    DWORD buildNum = getWindowsBuildNumber();
+    log::info("detected os build number: " + std::to_string(buildNum));
 
-    for (int retry = 0; retry < 30; ++retry) {
+    if (buildNum >= 22000) {
         HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
         if (defViewInProgman) {
             g_defView = defViewInProgman;
@@ -94,10 +110,17 @@ HWND findWallpaperHost() {
                 SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
             }
             makeIconsTransparent();
-            log::info("attached to progman host on 24h2/25h2: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+            log::info("attached to Windows 11 progman host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
             return g_progman;
         }
+    }
 
+    DWORD_PTR dummy = 0;
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &dummy);
+    SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &dummy);
+    SendMessageTimeoutW(g_progman, 0x052C, 0, 0, SMTO_NORMAL, 1000, &dummy);
+
+    for (int retry = 0; retry < 30; ++retry) {
         HWND shellContainer = nullptr;
         EnumWindows([](HWND top, LPARAM lp) -> BOOL {
             HWND shell = FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr);
@@ -111,19 +134,9 @@ HWND findWallpaperHost() {
         }, reinterpret_cast<LPARAM>(&shellContainer));
 
         if (shellContainer) {
-            if (shellContainer == g_progman) {
-                g_workerW = nullptr;
-                LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
-                if (!(style & WS_CLIPCHILDREN)) {
-                    SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
-                }
-                makeIconsTransparent();
-                log::info("attached to progman host on 24h2/25h2: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
-                return g_progman;
-            }
-
-            g_workerW = FindWindowExW(nullptr, shellContainer, L"WorkerW", nullptr);
-            if (g_workerW && IsWindow(g_workerW)) {
+            HWND worker = FindWindowExW(nullptr, shellContainer, L"WorkerW", nullptr);
+            if (worker && IsWindow(worker)) {
+                g_workerW = worker;
                 LONG_PTR style = GetWindowLongPtrW(g_workerW, GWL_STYLE);
                 if (!(style & WS_CLIPCHILDREN)) {
                     SetWindowLongPtrW(g_workerW, GWL_STYLE, style | WS_CLIPCHILDREN);
@@ -139,15 +152,51 @@ HWND findWallpaperHost() {
                 return g_workerW;
             }
 
-            makeIconsTransparent();
-            log::info("using shellcontainer host: 0x" + toHex(reinterpret_cast<uintptr_t>(shellContainer)));
-            return shellContainer;
+            HWND anyWorker = nullptr;
+            EnumWindows([](HWND top, LPARAM lp) -> BOOL {
+                char cls[64] = {0};
+                if (GetClassNameA(top, cls, sizeof(cls)) && strcmp(cls, "WorkerW") == 0) {
+                    if (!FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr)) {
+                        *reinterpret_cast<HWND*>(lp) = top;
+                        return FALSE;
+                    }
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&anyWorker));
+
+            if (anyWorker && IsWindow(anyWorker)) {
+                g_workerW = anyWorker;
+                LONG_PTR style = GetWindowLongPtrW(g_workerW, GWL_STYLE);
+                if (!(style & WS_CLIPCHILDREN)) {
+                    SetWindowLongPtrW(g_workerW, GWL_STYLE, style | WS_CLIPCHILDREN);
+                }
+                makeIconsTransparent();
+                ShowWindow(g_workerW, SW_SHOW);
+                SetWindowPos(g_workerW, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                if (g_listview) {
+                    UpdateWindow(g_listview);
+                    InvalidateRect(g_listview, nullptr, TRUE);
+                }
+                log::info("attached to detached workerw host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_workerW)));
+                return g_workerW;
+            }
         }
         Sleep(50);
     }
 
+    HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (defViewInProgman) {
+        g_defView = defViewInProgman;
+        g_listview = FindWindowExW(defViewInProgman, nullptr, L"SysListView32", nullptr);
+    }
+    g_workerW = nullptr;
+
+    LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
+    if (!(style & WS_CLIPCHILDREN)) {
+        SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
+    }
     makeIconsTransparent();
-    log::warn("using progamn as desktp fallback: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+    log::info("attached to progman host (24h2/25h2 or fallback): 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
     return g_progman;
 }
 
@@ -190,7 +239,7 @@ UINT g_resetToken = 0;
 
 bool initD3D11() {
     log::info("initilizing d3d11 devce and context...");
-    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
     D3D_FEATURE_LEVEL featureLevels[] = {
         D3D_FEATURE_LEVEL_11_1,
         D3D_FEATURE_LEVEL_11_0,
@@ -201,7 +250,12 @@ bool initD3D11() {
     D3D_FEATURE_LEVEL fl;
     HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 5, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
     if (FAILED(hr)) {
+        creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, creationFlags, featureLevels, 5, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
+    }
+    if (FAILED(hr)) {
         log::warn("d3d11 hw devce faild (hr = 0x" + toHex(hr) + "), retry warp softwre");
+        creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
         hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, creationFlags, featureLevels, 5, D3D11_SDK_VERSION, &g_d3dDevice, &fl, &g_d3dContext);
         if (FAILED(hr)) {
             log::error("d3d11 devce cmpletely faild (hr = 0x" + toHex(hr) + ")");
@@ -275,23 +329,8 @@ struct PaneRT {
     
     std::atomic<bool> threadRunning{false};
     std::atomic<int> targetFps{30};
+    std::atomic<bool> lowEndMode{false};
     std::thread renderThread;
-
-    void setSource(const std::wstring& newMedia, bool isMuted, float speed) {
-        media = newMedia;
-        muted = isMuted;
-        if (engine) {
-            BSTR url = SysAllocString(media.c_str());
-            engine->SetSource(url);
-            SysFreeString(url);
-            engine->SetLoop(TRUE);
-            engine->SetMuted(muted);
-            if (muted) engine->SetVolume(0.0);
-            if (speed < 0.25f || speed > 4.0f) speed = 1.0f;
-            engine->SetPlaybackRate((double)speed);
-            if (!paused && !g_manualPaused) engine->Play();
-        }
-    }
 
     ~PaneRT() {
         threadRunning = false;
@@ -342,7 +381,6 @@ public:
             if (m_pane && m_pane->engine) {
                 m_pane->engine->SetCurrentTime(0.0);
                 if (!m_pane->paused && !g_manualPaused) m_pane->engine->Play();
-                trimWorkingSet();
             }
         }
         return S_OK;
@@ -485,22 +523,212 @@ static LRESULT CALLBACK wallpaperWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+void optimizeVideoAsync(const std::wstring& mediaPath, const std::wstring& optPath, UINT32 inW, UINT32 inH, UINT32 fpsNum, UINT32 fpsDen, int maxW) {
+    std::wstring tmpPath = optPath + L".tmp";
+    DeleteFileW(tmpPath.c_str());
+
+    IMFAttributes* readerAttr = nullptr;
+    MFCreateAttributes(&readerAttr, 2);
+    if (readerAttr) {
+        readerAttr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+        readerAttr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+    }
+
+    IMFSourceReader* reader = nullptr;
+    HRESULT hr = MFCreateSourceReaderFromURL(mediaPath.c_str(), readerAttr, &reader);
+    if (readerAttr) readerAttr->Release();
+    if (FAILED(hr) || !reader) return;
+
+    IMFMediaType* partialType = nullptr;
+    MFCreateMediaType(&partialType);
+    partialType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    partialType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+    hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, partialType);
+    partialType->Release();
+    if (FAILED(hr)) {
+        reader->Release();
+        return;
+    }
+
+    IMFMediaType* decType = nullptr;
+    reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, &decType);
+    if (!decType) {
+        reader->Release();
+        return;
+    }
+
+    UINT32 targetW = (UINT32)maxW;
+    if (targetW < 1920 && inW >= 1920) targetW = 1920;
+    UINT32 targetH = (UINT32)((DWORD64)targetW * inH / inW);
+    targetW = (targetW + 1) & ~1;
+    targetH = (targetH + 1) & ~1;
+
+    UINT32 outFpsNum = fpsNum;
+    UINT32 outFpsDen = fpsDen;
+    if (outFpsNum > 30 && outFpsDen == 1) {
+        outFpsNum = 30;
+    }
+
+    IMFAttributes* writerAttr = nullptr;
+    MFCreateAttributes(&writerAttr, 1);
+    if (writerAttr) writerAttr->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
+
+    IMFSinkWriter* writer = nullptr;
+    hr = MFCreateSinkWriterFromURL(tmpPath.c_str(), nullptr, writerAttr, &writer);
+    if (writerAttr) writerAttr->Release();
+    if (FAILED(hr) || !writer) {
+        decType->Release();
+        reader->Release();
+        return;
+    }
+
+    IMFMediaType* encType = nullptr;
+    MFCreateMediaType(&encType);
+    encType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+    encType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264);
+    encType->SetUINT32(MF_MT_AVG_BITRATE, 8500000);
+    encType->SetUINT32(MF_MT_MPEG2_PROFILE, 100);
+    MFSetAttributeSize(encType, MF_MT_FRAME_SIZE, targetW, targetH);
+    MFSetAttributeRatio(encType, MF_MT_FRAME_RATE, outFpsNum, outFpsDen);
+    MFSetAttributeRatio(encType, MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+    encType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+
+    DWORD streamIdx = 0;
+    hr = writer->AddStream(encType, &streamIdx);
+    encType->Release();
+    if (FAILED(hr)) {
+        decType->Release();
+        writer->Release();
+        reader->Release();
+        DeleteFileW(tmpPath.c_str());
+        return;
+    }
+
+    hr = writer->SetInputMediaType(streamIdx, decType, nullptr);
+    decType->Release();
+    if (FAILED(hr)) {
+        writer->Release();
+        reader->Release();
+        DeleteFileW(tmpPath.c_str());
+        return;
+    }
+
+    hr = writer->BeginWriting();
+    if (FAILED(hr)) {
+        writer->Release();
+        reader->Release();
+        DeleteFileW(tmpPath.c_str());
+        return;
+    }
+
+    while (true) {
+        DWORD flags = 0;
+        LONGLONG pts = 0;
+        IMFSample* sample = nullptr;
+        hr = reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, &flags, &pts, &sample);
+        if (FAILED(hr) || (flags & MF_SOURCE_READERF_ENDOFSTREAM)) {
+            if (sample) sample->Release();
+            break;
+        }
+        if (sample) {
+            writer->WriteSample(streamIdx, sample);
+            sample->Release();
+        }
+    }
+
+    writer->Finalize();
+    writer->Release();
+    reader->Release();
+
+    if (MoveFileExW(tmpPath.c_str(), optPath.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        HANDLE reloadEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, kReloadEventName);
+        if (reloadEvent) {
+            SetEvent(reloadEvent);
+            CloseHandle(reloadEvent);
+        }
+    } else {
+        DeleteFileW(tmpPath.c_str());
+    }
+}
+
+std::wstring optimizeVideoIfNeeded(const std::wstring& mediaPath, bool lowEndMode, int maxW) {
+    if (mediaPath.empty() || !lowEndMode) return mediaPath;
+
+    size_t dot = mediaPath.rfind(L'.');
+    if (dot == std::wstring::npos) return mediaPath;
+
+    std::wstring ext = mediaPath.substr(dot);
+    if (ext != L".mp4" && ext != L".mov" && ext != L".mkv" && ext != L".webm") return mediaPath;
+
+    if (mediaPath.find(L".opt.") != std::wstring::npos) return mediaPath;
+
+    std::wstring optPath = mediaPath.substr(0, dot) + L".opt.mp4";
+    if (GetFileAttributesW(optPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        return optPath;
+    }
+
+    IMFAttributes* readerAttr = nullptr;
+    MFCreateAttributes(&readerAttr, 1);
+    if (readerAttr) readerAttr->SetUINT32(MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, TRUE);
+
+    IMFSourceReader* reader = nullptr;
+    HRESULT hr = MFCreateSourceReaderFromURL(mediaPath.c_str(), readerAttr, &reader);
+    if (readerAttr) readerAttr->Release();
+    if (FAILED(hr) || !reader) return mediaPath;
+
+    IMFMediaType* nativeType = nullptr;
+    UINT32 inW = 0, inH = 0;
+    UINT32 fpsNum = 30, fpsDen = 1;
+    if (SUCCEEDED(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, &nativeType)) && nativeType) {
+        MFGetAttributeSize(nativeType, MF_MT_FRAME_SIZE, &inW, &inH);
+        MFGetAttributeRatio(nativeType, MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+        nativeType->Release();
+    }
+    reader->Release();
+
+    if (inW <= (UINT32)maxW && inH <= 1080) {
+        return mediaPath;
+    }
+
+    static std::set<std::wstring> s_inProgress;
+    if (s_inProgress.count(mediaPath) == 0) {
+        s_inProgress.insert(mediaPath);
+        std::thread([mediaPath, optPath, inW, inH, fpsNum, fpsDen, maxW]() {
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            MFStartup(MF_VERSION);
+            optimizeVideoAsync(mediaPath, optPath, inW, inH, fpsNum, fpsDen, maxW);
+            MFShutdown();
+            CoUninitialize();
+        }).detach();
+    }
+
+    return mediaPath;
+}
+
 bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     int ax = def.absRect.left, ay = def.absRect.top;
     int w = def.absRect.right - ax, h = def.absRect.bottom - ay;
     if (w <= 0 || h <= 0) return false;
 
+    int sw = w, sh = h;
+    if (st.lowEndMode && sw > 1920) {
+        sh = (int)((int64_t)sh * 1920 / sw);
+        sw = 1920;
+    }
+
+    std::wstring playMedia = optimizeVideoIfNeeded(def.media, st.lowEndMode, 1920);
+
     log::info("startng pane: bounds [" + std::to_string(ax) + ", " +
               std::to_string(ay) + ", " + std::to_string(w) + "x" + std::to_string(h) +
-              "], meda: " + narrow(def.media));
+              "], meda: " + narrow(playMedia));
 
-    if (!def.media.empty()) {
-        DWORD attr = GetFileAttributesW(def.media.c_str());
+    if (!playMedia.empty()) {
+        DWORD attr = GetFileAttributesW(playMedia.c_str());
         if (attr == INVALID_FILE_ATTRIBUTES) {
-            log::error("meda file not found on dsk: " + narrow(def.media));
+            log::error("meda file not found on dsk: " + narrow(playMedia));
         } else {
             WIN32_FILE_ATTRIBUTE_DATA fad{};
-            if (GetFileAttributesExW(def.media.c_str(), GetFileExInfoStandard, &fad)) {
+            if (GetFileAttributesExW(playMedia.c_str(), GetFileExInfoStandard, &fad)) {
                 ULARGE_INTEGER sz;
                 sz.LowPart = fad.nFileSizeLow;
                 sz.HighPart = fad.nFileSizeHigh;
@@ -540,16 +768,13 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     rt->absRect = def.absRect;
     rt->isSpan = def.isSpan;
     rt->muted = st.muted;
-    rt->media = def.media;
+    rt->lowEndMode.store(st.lowEndMode);
+    rt->media = playMedia;
     rt->targetFps.store(st.targetFps);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(rt));
     st.panes.push_back(rt);
 
-    int sw = w, sh = h;
-    if (st.lowEndMode && sw > 1280) {
-        sh = (int)((int64_t)sh * 1280 / sw);
-        sw = 1280;
-    }
+
 
     IDXGIDevice* dxgiDevice = nullptr;
     g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
@@ -575,7 +800,13 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
         scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
         hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
         if (FAILED(hrSc)) {
-            log::error("createswapchain faild cmpletely (hr = 0x" + toHex(hrSc) + ")");
+            log::warn("createswapchain flip_seq faild (hr = 0x" + toHex(hrSc) + "), retry blit discard");
+            scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+            scd.BufferCount = 1;
+            hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
+            if (FAILED(hrSc)) {
+                log::error("createswapchain faild cmpletely (hr = 0x" + toHex(hrSc) + ")");
+            }
         }
     }
     factory->Release(); adapter->Release(); dxgiDevice->Release();
@@ -618,26 +849,12 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
     rt->threadRunning = true;
     rt->renderThread = std::thread([rt, sw, sh]() {
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        timeBeginPeriod(1);
         LONGLONG lastPts = -1;
         bool firstFrameLogged = false;
-        int trimStage = 0;
         DWORD firstFrameTick = 0;
-
-        int refreshHz = 60;
-        HMONITOR hMon = MonitorFromWindow(rt->hwnd, MONITOR_DEFAULTTONEAREST);
-        if (hMon) {
-            MONITORINFOEXW mix{};
-            mix.cbSize = sizeof(mix);
-            if (GetMonitorInfoW(hMon, &mix)) {
-                DEVMODEW dm{};
-                dm.dmSize = sizeof(dm);
-                if (EnumDisplaySettingsW(mix.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
-                    if (dm.dmDisplayFrequency >= 30 && dm.dmDisplayFrequency <= 360) {
-                        refreshHz = (int)dm.dmDisplayFrequency;
-                    }
-                }
-            }
-        }
+        int trimStage = 0;
+        bool wasPaused = false;
 
         LARGE_INTEGER qpcFreq{};
         QueryPerformanceFrequency(&qpcFreq);
@@ -646,8 +863,16 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
 
         while (rt->threadRunning) {
             if (rt->paused || g_manualPaused || !rt->engine || !rt->swapChain) {
+                wasPaused = true;
                 Sleep(80);
+                QueryPerformanceCounter(&lastPresentQpc);
                 continue;
+            }
+
+            if (wasPaused) {
+                wasPaused = false;
+                lastPts = -1;
+                QueryPerformanceCounter(&lastPresentQpc);
             }
 
             LONGLONG pts = 0;
@@ -661,7 +886,6 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
 
                     LARGE_INTEGER nowQpc{};
                     QueryPerformanceCounter(&nowQpc);
-
                     LONGLONG minIntervalQpc = (qpcFreq.QuadPart / targetFps) - (qpcFreq.QuadPart * 3 / 1000);
 
                     if (nowQpc.QuadPart - lastPresentQpc.QuadPart >= minIntervalQpc) {
@@ -675,28 +899,19 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
                             rt->engine->TransferVideoFrame(surf, &srcR, &dstR, &bg);
                             surf->Release();
 
-                            UINT syncInterval = 1;
-                            if (targetFps <= 30) {
-                                if (refreshHz >= 110) syncInterval = 4;
-                                else if (refreshHz >= 70) syncInterval = 2;
-                                else syncInterval = 2;
-                            }
-
-                            rt->swapChain->Present(syncInterval, 0);
+                            rt->swapChain->Present(1, 0);
 
                             if (!firstFrameLogged) {
                                 firstFrameLogged = true;
                                 firstFrameTick = GetTickCount();
-                                log::info("first video frame presented, pts=" + std::to_string(pts) +
-                                          ", mon=" + std::to_string(refreshHz) + "hz, sync=" + std::to_string(syncInterval));
                             }
                         }
                     }
                 } else {
-                    Sleep(4);
+                    Sleep(2);
                 }
             } else {
-                Sleep(6);
+                Sleep(4);
             }
 
             if (firstFrameLogged && trimStage < 3) {
@@ -713,6 +928,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
                 }
             }
         }
+        timeEndPeriod(1);
         CoUninitialize();
     });
 
@@ -728,7 +944,10 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
     st.lowEndMode = cfg.lowEndMode;
     st.playbackSpeed = (float)cfg.playbackSpeed;
     st.targetFps = cfg.targetFps == 60 ? 60 : 30;
-    for (auto p : st.panes) p->targetFps.store(st.targetFps);
+    for (auto p : st.panes) {
+        p->targetFps.store(st.targetFps);
+        p->lowEndMode.store(st.lowEndMode);
+    }
 
     bool needsFullRebuild = (st.panes.size() != desiredPanes.size());
     if (!needsFullRebuild) {
@@ -749,7 +968,10 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
         }
     } else {
         for (size_t i = 0; i < desiredPanes.size(); ++i) {
-            st.panes[i]->setSource(desiredPanes[i].media, st.muted, st.playbackSpeed);
+            if (st.panes[i]->engine) {
+                st.panes[i]->engine->SetMuted(st.muted);
+                st.panes[i]->engine->SetPlaybackRate((double)st.playbackSpeed);
+            }
         }
     }
     trimMemory();
@@ -775,6 +997,12 @@ bool isDesktopWindow(HWND hwnd) {
 bool isWindowCoveringScreen(HWND hwnd, bool checkMaximized, bool checkFullscreen) {
     if (!checkMaximized && !checkFullscreen) return false;
     if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) return false;
+
+    LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    if (!(style & WS_VISIBLE)) return false;
+    if (!(style & WS_MAXIMIZE) && ((style & WS_CAPTION) == WS_CAPTION)) {
+        return false;
+    }
 
     LONG exStyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
     if ((exStyle & WS_EX_TOOLWINDOW) || (exStyle & WS_EX_TRANSPARENT)) return false;
@@ -926,12 +1154,14 @@ int runEngineFromConfig() {
     bool running = true;
     DWORD waitTimeout = (DWORD)cfg.occlusionPollMs;
     if (waitTimeout < 50) waitTimeout = 50;
-    if (waitTimeout > 300) waitTimeout = 150;
+    if (waitTimeout > 250) waitTimeout = 150;
 
     DWORD lastPauseTick = 0;
     DWORD lastTrimTick = GetTickCount();
+    DWORD lastEnumTick = 0;
     bool wasOccluded = false;
     DWORD currentPid = GetCurrentProcessId();
+    HWND lastFw = nullptr;
 
     HANDLE waitHandles[2] = { stopEvent, reloadEvent };
 
@@ -978,28 +1208,15 @@ int runEngineFromConfig() {
 
         if (!occluded) {
             HWND fw = GetForegroundWindow();
-            if (fw) {
+            if (fw && !isDesktopWindow(fw)) {
                 DWORD fgPid = 0;
                 GetWindowThreadProcessId(fw, &fgPid);
                 if (fgPid != currentPid) {
-                    if (!isDesktopWindow(fw)) {
-                        if (g_currentCfg.pauseUnlessDesktop) {
-                            occluded = true;
-                        } else if (isWindowCoveringScreen(fw, g_currentCfg.pauseWhenMaximized, g_currentCfg.pauseOnFullscreen)) {
-                            occluded = true;
-                        }
+                    if (g_currentCfg.pauseUnlessDesktop) {
+                        occluded = true;
+                    } else if (isWindowCoveringScreen(fw, g_currentCfg.pauseWhenMaximized, g_currentCfg.pauseOnFullscreen)) {
+                        occluded = true;
                     }
-                }
-            }
-
-            if (!occluded && (g_currentCfg.pauseWhenMaximized || g_currentCfg.pauseOnFullscreen)) {
-                OcclusionEnumContext ctx;
-                ctx.currentPid = currentPid;
-                ctx.checkMaximized = g_currentCfg.pauseWhenMaximized;
-                ctx.checkFullscreen = g_currentCfg.pauseOnFullscreen;
-                EnumWindows(EnumWindowsOcclusionCallback, reinterpret_cast<LPARAM>(&ctx));
-                if (ctx.foundCovering) {
-                    occluded = true;
                 }
             }
         }
@@ -1008,7 +1225,7 @@ int runEngineFromConfig() {
             wasOccluded = occluded;
             if (occluded) {
                 lastPauseTick = GetTickCount();
-                trimMemory();
+                trimWorkingSet();
             }
         }
 
@@ -1030,7 +1247,7 @@ int runEngineFromConfig() {
         }
 
         DWORD nowTrim = GetTickCount();
-        if (nowTrim - lastTrimTick >= 10000) {
+        if (nowTrim - lastTrimTick >= 30000) {
             lastTrimTick = nowTrim;
             trimWorkingSet();
         }

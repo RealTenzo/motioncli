@@ -1,4 +1,5 @@
 #include "core/moewalls.h"
+#include "core/config.h"
 #include "net/http.h"
 #include "util/str.h"
 
@@ -130,11 +131,32 @@ bool resolve(Item& it, std::string& err) {
     std::string html;
     if (!http::getString(widen(it.postUrl), html, err)) return false;
 
-    size_t btn = html.find("id=\"moe-download\"");
-    if (btn == std::string::npos) { err = "No download link on the page"; return false; }
-    std::string token = std::string(quotedAfter(html, btn, "data-url=\""));
-    if (token.empty()) { err = "No download link on the page"; return false; }
-    it.url = "https://go.moewalls.com/download.php?video=" + token;
+    bool wantHd = false;
+    Config cfg = Config::load();
+    if (cfg.lowEndMode || cfg.quality == Quality::Low || cfg.quality == Quality::Medium) {
+        wantHd = true;
+    }
+
+    if (wantHd) {
+        size_t hdPos = html.find("/dl/hd/");
+        if (hdPos != std::string::npos) {
+            size_t q1 = html.rfind('"', hdPos);
+            size_t q2 = html.find('"', hdPos);
+            if (q1 != std::string::npos && q2 != std::string::npos && q2 > q1) {
+                std::string link = html.substr(q1 + 1, q2 - q1 - 1);
+                if (link.rfind("http", 0) != 0) link = "https://moewalls.com" + link;
+                it.url = link;
+            }
+        }
+    }
+
+    if (it.url.empty()) {
+        size_t btn = html.find("id=\"moe-download\"");
+        if (btn == std::string::npos) { err = "No download link on the page"; return false; }
+        std::string token = std::string(quotedAfter(html, btn, "data-url=\""));
+        if (token.empty()) { err = "No download link on the page"; return false; }
+        it.url = "https://go.moewalls.com/download.php?video=" + token;
+    }
 
     std::string title = trim(htmlDecode(std::string(metaContent(html, "og:title"))));
     const std::string brand = " - MoeWalls";

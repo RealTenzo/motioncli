@@ -100,7 +100,7 @@ std::wstring getSpecialFolder(int csidl) {
 }
 
 bool httpGetString(const std::wstring& host, const std::wstring& path, std::string& outBody) {
-    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MotionCLI/1.3.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MotionCLI/1.3.5", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
 
@@ -152,7 +152,7 @@ bool httpDownloadFileWithProgress(const std::wstring& fullUrl, const std::wstrin
 
     if (!WinHttpCrackUrl(fullUrl.c_str(), 0, 0, &urlComp)) return false;
 
-    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MotionCLI/1.3.4", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+    HINTERNET hSession = WinHttpOpen(L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) MotionCLI/1.3.5", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!hSession) return false;
 
@@ -511,7 +511,7 @@ int main(int argc, char* argv[]) {
     std::cout << "  " << color::cyan << "[2/4] Fetching latest release info from GitHub..." << color::reset << "\n";
     std::string jsonStr;
     std::string downloadUrl;
-    std::string versionStr = "1.3.4";
+    std::string versionStr = "1.3.5";
 
     if (!httpGetString(L"raw.githubusercontent.com", L"/RealTenzo/motioncli/main/version.json", jsonStr)) {
         httpGetString(L"raw.githubusercontent.com", L"/RealTenzo/motioncli/refs/heads/main/version.json", jsonStr);

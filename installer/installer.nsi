@@ -26,8 +26,8 @@ RequestExecutionLevel user
 Section "Install"
   SetOutPath "$INSTDIR"
 
-  DetailPrint "Downloading latest Motion CLI v1.3.4..."
-  nsExec::ExecToLog 'curl.exe -f -s -L "https://github.com/RealTenzo/motioncli/releases/download/1.3.4/motioncli_portable.exe" -o "$INSTDIR\motioncli.exe"'
+  DetailPrint "Downloading latest Motion CLI v1.3.5..."
+  nsExec::ExecToLog 'curl.exe -f -s -L "https://github.com/RealTenzo/motioncli/releases/download/1.3.5/motioncli_portable.exe" -o "$INSTDIR\motioncli.exe"'
   ${If} ${FileExists} "$INSTDIR\motioncli.exe"
     DetailPrint "Download verified."
   ${Else}

@@ -210,7 +210,7 @@ void App::help() {
     f.line("    mode keeps playback at 1080p (skips 4K) for weaker PCs.");
     f.line();
     f.raw("  ").raw(color::brightCyan).raw("Controls").raw(color::reset).line();
-    f.line("    Tray icon: mute / stop / reopen. Settings: start on login.");
+    f.line("    Tray icon: mute / stop / reopen. Settings: auto start.");
     f.line();
     f.raw("  ").raw(color::magenta).raw("Motion CLI v" MOTION_VERSION)
      .raw(" · Dev by tenzo").raw(color::reset)
@@ -805,8 +805,8 @@ bool App::applyWallpaper(const Wallpaper& w) {
         { color::green, std::string("✓ ").append(w.title).append(" is now live across your desktop.") },
         { color::gray,  "It keeps running in the background (see the tray icon)." },
         { color::gray,  autostart::isEnabled()
-                            ? "It will also resume automatically on login."
-                            : "Enable 'Start on login' in Settings to auto-resume." },
+                            ? "It will also resume automatically on Windows startup."
+                            : "Enable 'Auto start' in Settings to auto-resume." },
     });
     return true;
 }
@@ -1049,9 +1049,9 @@ void App::settings() {
             { "Performance",          "smoothness & battery" },
             { "Wallpapers per load",   std::to_string(m_config.libraryCount) },
             { "Check for updates now", "" },
-            { "Auto-check on startup", m_config.checkForUpdatesOnLaunch ? "on" : "off" },
+            { "Auto update",          m_config.checkForUpdatesOnLaunch ? "on" : "off" },
             { "Connect Pexels",       m_config.pexelsApiKey.empty() ? "not set" : "connected" },
-            { "Start on login",       autoOn ? "enabled" : "disabled" },
+            { "Auto start",           autoOn ? "enabled" : "disabled" },
             { "Default mute",         m_config.muteByDefault ? "on" : "off" },
             { "Debug log",            "view & open folder" },
             { "Help & about",         "" },
@@ -1083,7 +1083,7 @@ void App::settings() {
             case 5: {
                 bool ok = autoOn ? autostart::disable() : autostart::enable();
                 if (!ok)
-                    notify("Settings", { { color::red, "Could not update the login setting." } });
+                    notify("Settings", { { color::red, "Could not update the auto start setting." } });
                 break;
             }
             case 6: {
