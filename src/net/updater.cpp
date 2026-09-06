@@ -53,9 +53,10 @@ std::string extractChangelogFromReleaseHtml(const std::string& html) {
                 if (raw[i] == '<') {
                     inTag = true;
                     if (i + 4 <= raw.size() && raw.substr(i, 4) == "<li>") {
-                        text += "\n  • ";
-                    } else if (i + 5 <= raw.size() && (raw.substr(i, 5) == "</h2>" || raw.substr(i, 5) == "</h3>" || raw.substr(i, 4) == "<br>")) {
-                        text += "\n";
+                        if (!text.empty() && text.back() != '\n') text += '\n';
+                        text += "• ";
+                    } else if (i + 5 <= raw.size() && (raw.substr(i, 5) == "</h2>" || raw.substr(i, 5) == "</h3>" || raw.substr(i, 4) == "<br>" || raw.substr(i, 4) == "</p>")) {
+                        if (!text.empty() && text.back() != '\n') text += '\n';
                     }
                 } else if (raw[i] == '>') {
                     inTag = false;

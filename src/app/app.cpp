@@ -35,20 +35,50 @@ std::string joinTags(const std::vector<std::string>& tags) {
 
 std::vector<std::string> wrapText(const std::string& text, size_t width) {
     std::vector<std::string> lines;
-    std::string line;
-    size_t i = 0;
-    while (i < text.size()) {
-        size_t sp = text.find(' ', i);
-        std::string word = text.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
-        if (!line.empty() && line.size() + 1 + word.size() > width) {
-            lines.push_back(line);
-            line.clear();
+    size_t start = 0;
+    while (start < text.size()) {
+        size_t end = text.find('\n', start);
+        std::string rawLine = (end == std::string::npos) ? text.substr(start) : text.substr(start, end - start);
+        if (end == std::string::npos) start = text.size();
+        else start = end + 1;
+
+        while (!rawLine.empty() && (rawLine.back() == '\r' || rawLine.back() == ' ')) rawLine.pop_back();
+        size_t firstNonSpace = rawLine.find_first_not_of(" \t");
+        if (firstNonSpace == std::string::npos) continue;
+
+        std::string clean = rawLine.substr(firstNonSpace);
+        bool isBullet = false;
+        if (clean.rfind("• ", 0) == 0 || clean.rfind("- ", 0) == 0 || clean.rfind("* ", 0) == 0) {
+            isBullet = true;
+            if (clean.rfind("- ", 0) == 0 || clean.rfind("* ", 0) == 0) {
+                clean = "• " + clean.substr(2);
+            }
         }
-        if (!line.empty()) line += ' ';
-        line += word;
-        i = (sp == std::string::npos) ? text.size() : sp + 1;
+
+        std::string cur;
+        size_t wi = 0;
+        bool firstWordOfLine = true;
+        while (wi < clean.size()) {
+            size_t wsp = clean.find_first_of(" \t", wi);
+            std::string word = clean.substr(wi, wsp == std::string::npos ? std::string::npos : wsp - wi);
+            if (wsp == std::string::npos) wi = clean.size();
+            else wi = clean.find_first_not_of(" \t", wsp);
+
+            if (word.empty()) continue;
+
+            if (!cur.empty() && cur.size() + 1 + word.size() > width) {
+                lines.push_back(cur);
+                cur.clear();
+                if (isBullet) cur = "  ";
+                firstWordOfLine = true;
+            }
+
+            if (!cur.empty() && !firstWordOfLine) cur += ' ';
+            cur += word;
+            firstWordOfLine = false;
+        }
+        if (!cur.empty()) lines.push_back(cur);
     }
-    if (!line.empty()) lines.push_back(line);
     return lines;
 }
 
@@ -254,14 +284,14 @@ void App::showUpdateDialog(bool manualCheck) {
 
     std::string sub = "v" MOTION_VERSION " → v" + info.latestVersion;
     if (!info.changelog.empty()) {
-        sub += "\n\n  What's New:\n";
-        auto lines = wrapText(info.changelog, 72);
-        int maxLines = 8;
+        sub += "\n\nWhat's New:";
+        auto lines = wrapText(info.changelog, 66);
+        int maxLines = 5;
         for (int i = 0; i < (int)lines.size() && i < maxLines; ++i) {
-            sub += "  " + lines[i] + "\n";
+            sub += "\n" + lines[i];
         }
         if ((int)lines.size() > maxLines) {
-            sub += "  ... (" + std::to_string(lines.size() - maxLines) + " more lines)\n";
+            sub += "\n... (" + std::to_string(lines.size() - maxLines) + " more lines in GitHub release)";
         }
     }
 

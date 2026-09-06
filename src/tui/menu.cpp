@@ -12,7 +12,15 @@ void Menu::buildFrame(Frame& f, int selected) const {
         draw::title(f, m_title);
 
     if (!m_subtitle.empty()) {
-        f.raw(color::gray).raw("  ").raw(m_subtitle).raw(color::reset).line();
+        size_t start = 0;
+        while (start < m_subtitle.size()) {
+            size_t end = m_subtitle.find('\n', start);
+            std::string subline = (end == std::string::npos) ? m_subtitle.substr(start) : m_subtitle.substr(start, end - start);
+            if (!subline.empty() && subline.back() == '\r') subline.pop_back();
+            f.raw(color::gray).raw("  ").raw(subline).raw(color::reset).line();
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
     }
     f.line();
 

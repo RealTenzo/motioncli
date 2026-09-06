@@ -98,23 +98,6 @@ HWND findWallpaperHost() {
     DWORD buildNum = getWindowsBuildNumber();
     log::info("detected os build number: " + std::to_string(buildNum));
 
-    if (buildNum >= 22000) {
-        HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
-        if (defViewInProgman) {
-            g_defView = defViewInProgman;
-            g_listview = FindWindowExW(defViewInProgman, nullptr, L"SysListView32", nullptr);
-            g_workerW = nullptr;
-
-            LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
-            if (!(style & WS_CLIPCHILDREN)) {
-                SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
-            }
-            makeIconsTransparent();
-            log::info("attached to Windows 11 progman host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
-            return g_progman;
-        }
-    }
-
     DWORD_PTR dummy = 0;
     SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &dummy);
     SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &dummy);
@@ -777,11 +760,23 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
 
 
     IDXGIDevice* dxgiDevice = nullptr;
-    g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);
+    if (!g_d3dDevice || FAILED(g_d3dDevice->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice)) || !dxgiDevice) {
+        log::error("QueryInterface IDXGIDevice faild");
+        return false;
+    }
     IDXGIAdapter* adapter = nullptr;
-    dxgiDevice->GetAdapter(&adapter);
+    if (FAILED(dxgiDevice->GetAdapter(&adapter)) || !adapter) {
+        log::error("GetAdapter faild");
+        dxgiDevice->Release();
+        return false;
+    }
     IDXGIFactory2* factory = nullptr;
-    adapter->GetParent(__uuidof(IDXGIFactory2), (void**)&factory);
+    if (FAILED(adapter->GetParent(__uuidof(IDXGIFactory2), (void**)&factory)) || !factory) {
+        log::error("GetParent IDXGIFactory2 faild");
+        adapter->Release();
+        dxgiDevice->Release();
+        return false;
+    }
 
     DXGI_SWAP_CHAIN_DESC1 scd = {};
     scd.Width = sw;
@@ -803,6 +798,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
             log::warn("createswapchain flip_seq faild (hr = 0x" + toHex(hrSc) + "), retry blit discard");
             scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             scd.BufferCount = 1;
+            scd.Scaling = DXGI_SCALING_NONE;
             hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
             if (FAILED(hrSc)) {
                 log::error("createswapchain faild cmpletely (hr = 0x" + toHex(hrSc) + ")");
@@ -1074,6 +1070,14 @@ BOOL CALLBACK EnumWindowsOcclusionCallback(HWND hwnd, LPARAM lParam) {
 
 int runEngineFromConfig() {
     log::init(false);
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
+        char buf[128];
+        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "CRASH! exception code 0x%08X at 0x%p",
+                    ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
+        log::error(buf);
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+
     log::info("Starting Motion CLI wallpaper engine background service...");
 
     HANDLE mutex = CreateMutexW(nullptr, FALSE, kEngineMutexName);
@@ -1164,14 +1168,6 @@ int runEngineFromConfig() {
     HWND lastFw = nullptr;
 
     HANDLE waitHandles[2] = { stopEvent, reloadEvent };
-
-    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS* ep) -> LONG {
-        char buf[128];
-        _snprintf_s(buf, sizeof(buf), _TRUNCATE, "CRASH! exception code 0x%08X at 0x%p",
-                    ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
-        log::error(buf);
-        return EXCEPTION_CONTINUE_SEARCH;
-    });
 
     while (running) {
         DWORD waitRes = MsgWaitForMultipleObjects(2, waitHandles, FALSE, waitTimeout, QS_ALLINPUT);
@@ -1316,7 +1312,7 @@ void EngineController::stop() {
 }
 
 bool EngineController::isRunning() const {
-    HANDLE mutex = OpenMutexW(MUTEX_ALL_ACCESS, FALSE, kEngineMutexName);
+    HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, kEngineMutexName);
     if (mutex) {
         CloseHandle(mutex);
         return true;
