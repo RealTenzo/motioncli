@@ -98,6 +98,26 @@ HWND findWallpaperHost() {
     DWORD buildNum = getWindowsBuildNumber();
     log::info("detected os build number: " + std::to_string(buildNum));
 
+    HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (defViewInProgman || buildNum >= 22000) {
+        if (!defViewInProgman) {
+            defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
+        }
+        if (defViewInProgman) {
+            g_defView = defViewInProgman;
+            g_listview = FindWindowExW(defViewInProgman, nullptr, L"SysListView32", nullptr);
+        }
+        g_workerW = nullptr;
+
+        LONG_PTR style = GetWindowLongPtrW(g_progman, GWL_STYLE);
+        if (!(style & WS_CLIPCHILDREN)) {
+            SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
+        }
+        makeIconsTransparent();
+        log::info("attached to Windows 11 progman host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+        return g_progman;
+    }
+
     DWORD_PTR dummy = 0;
     SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 0, SMTO_NORMAL, 1000, &dummy);
     SendMessageTimeoutW(g_progman, 0x052C, 0x0000000D, 1, SMTO_NORMAL, 1000, &dummy);
@@ -116,7 +136,7 @@ HWND findWallpaperHost() {
             return TRUE;
         }, reinterpret_cast<LPARAM>(&shellContainer));
 
-        if (shellContainer) {
+        if (shellContainer && shellContainer != g_progman) {
             HWND worker = FindWindowExW(nullptr, shellContainer, L"WorkerW", nullptr);
             if (worker && IsWindow(worker)) {
                 g_workerW = worker;
@@ -134,43 +154,14 @@ HWND findWallpaperHost() {
                 log::info("attached to toplevel workerw host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_workerW)));
                 return g_workerW;
             }
-
-            HWND anyWorker = nullptr;
-            EnumWindows([](HWND top, LPARAM lp) -> BOOL {
-                char cls[64] = {0};
-                if (GetClassNameA(top, cls, sizeof(cls)) && strcmp(cls, "WorkerW") == 0) {
-                    if (!FindWindowExW(top, nullptr, L"SHELLDLL_DefView", nullptr)) {
-                        *reinterpret_cast<HWND*>(lp) = top;
-                        return FALSE;
-                    }
-                }
-                return TRUE;
-            }, reinterpret_cast<LPARAM>(&anyWorker));
-
-            if (anyWorker && IsWindow(anyWorker)) {
-                g_workerW = anyWorker;
-                LONG_PTR style = GetWindowLongPtrW(g_workerW, GWL_STYLE);
-                if (!(style & WS_CLIPCHILDREN)) {
-                    SetWindowLongPtrW(g_workerW, GWL_STYLE, style | WS_CLIPCHILDREN);
-                }
-                makeIconsTransparent();
-                ShowWindow(g_workerW, SW_SHOW);
-                SetWindowPos(g_workerW, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-                if (g_listview) {
-                    UpdateWindow(g_listview);
-                    InvalidateRect(g_listview, nullptr, TRUE);
-                }
-                log::info("attached to detached workerw host: 0x" + toHex(reinterpret_cast<uintptr_t>(g_workerW)));
-                return g_workerW;
-            }
         }
         Sleep(50);
     }
 
-    HWND defViewInProgman = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
-    if (defViewInProgman) {
-        g_defView = defViewInProgman;
-        g_listview = FindWindowExW(defViewInProgman, nullptr, L"SysListView32", nullptr);
+    HWND defViewFallback = FindWindowExW(g_progman, nullptr, L"SHELLDLL_DefView", nullptr);
+    if (defViewFallback) {
+        g_defView = defViewFallback;
+        g_listview = FindWindowExW(defViewFallback, nullptr, L"SysListView32", nullptr);
     }
     g_workerW = nullptr;
 
@@ -179,7 +170,7 @@ HWND findWallpaperHost() {
         SetWindowLongPtrW(g_progman, GWL_STYLE, style | WS_CLIPCHILDREN);
     }
     makeIconsTransparent();
-    log::info("attached to progman host (24h2/25h2 or fallback): 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
+    log::info("attached to progman host fallback: 0x" + toHex(reinterpret_cast<uintptr_t>(g_progman)));
     return g_progman;
 }
 
@@ -798,7 +789,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
             log::warn("createswapchain flip_seq faild (hr = 0x" + toHex(hrSc) + "), retry blit discard");
             scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             scd.BufferCount = 1;
-            scd.Scaling = DXGI_SCALING_NONE;
+            scd.Scaling = DXGI_SCALING_STRETCH;
             hrSc = factory->CreateSwapChainForHwnd(g_d3dDevice, hwnd, &scd, nullptr, nullptr, &rt->swapChain);
             if (FAILED(hrSc)) {
                 log::error("createswapchain faild cmpletely (hr = 0x" + toHex(hrSc) + ")");
@@ -875,8 +866,6 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
             HRESULT hr = rt->engine->OnVideoStreamTick(&pts);
             if (hr == S_OK) {
                 if (pts != lastPts) {
-                    lastPts = pts;
-
                     int targetFps = rt->targetFps.load();
                     if (targetFps != 60) targetFps = 30;
 
@@ -885,6 +874,7 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
                     LONGLONG minIntervalQpc = (qpcFreq.QuadPart / targetFps) - (qpcFreq.QuadPart * 3 / 1000);
 
                     if (nowQpc.QuadPart - lastPresentQpc.QuadPart >= minIntervalQpc) {
+                        lastPts = pts;
                         lastPresentQpc = nowQpc;
 
                         IDXGISurface* surf = nullptr;
@@ -902,19 +892,21 @@ bool startPane(HINSTANCE inst, HWND host, const PaneDef& def, EngineState& st) {
                                 firstFrameTick = GetTickCount();
                             }
                         }
+                    } else {
+                        Sleep(1);
                     }
                 } else {
-                    Sleep(2);
+                    Sleep(1);
                 }
             } else {
-                Sleep(4);
+                Sleep(2);
             }
 
             if (firstFrameLogged && trimStage < 3) {
                 DWORD elapsed = GetTickCount() - firstFrameTick;
                 if (trimStage == 0 && elapsed >= 1500) {
                     trimStage = 1;
-                    trimMemory();
+                    trimWorkingSet();
                 } else if (trimStage == 1 && elapsed >= 4000) {
                     trimStage = 2;
                     trimWorkingSet();
@@ -948,8 +940,9 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
     bool needsFullRebuild = (st.panes.size() != desiredPanes.size());
     if (!needsFullRebuild) {
         for (size_t i = 0; i < desiredPanes.size(); ++i) {
+            std::wstring expectedMedia = optimizeVideoIfNeeded(desiredPanes[i].media, st.lowEndMode, 1920);
             if (st.panes[i]->isSpan != desiredPanes[i].isSpan ||
-                st.panes[i]->media != desiredPanes[i].media) {
+                st.panes[i]->media != expectedMedia) {
                 needsFullRebuild = true;
                 break;
             }
@@ -970,7 +963,7 @@ void applyConfigToState(HINSTANCE inst, HWND host, EngineState& st, const Config
             }
         }
     }
-    trimMemory();
+    trimWorkingSet();
 }
 
 bool isDesktopWindow(HWND hwnd) {
