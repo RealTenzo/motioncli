@@ -1,6 +1,7 @@
 #include "core/moewalls.h"
 #include "core/config.h"
 #include "net/http.h"
+#include "util/log.h"
 #include "util/str.h"
 
 #include <windows.h>
@@ -156,6 +157,9 @@ bool resolve(Item& it, std::string& err) {
         std::string token = std::string(quotedAfter(html, btn, "data-url=\""));
         if (token.empty()) { err = "No download link on the page"; return false; }
         it.url = "https://go.moewalls.com/download.php?video=" + token;
+        if (wantHd) log::warn("HD rendition missing, using full quality for " + it.id);
+    } else if (wantHd) {
+        log::info("HD rendition picked for " + it.id);
     }
 
     std::string title = trim(htmlDecode(std::string(metaContent(html, "og:title"))));

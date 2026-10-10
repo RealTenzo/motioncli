@@ -3,6 +3,7 @@
 #include "tui/dialogs.h"
 #include "tui/image.h"
 #include "core/autostart.h"
+#include "core/transcode.h"
 #include "net/http.h"
 #include "util/str.h"
 
@@ -695,6 +696,8 @@ void App::wallpaperDetail(const Wallpaper& w) {
     if (canPreview) items.push_back({ "Preview", "open in browser/player" });
     items.push_back({ "Assign to a monitor…", "" });
     items.push_back({ "Export a copy…", "" });
+    const bool canOptimize = cached && needsOptimize(Library::localPath(wr));
+    if (canOptimize) items.push_back({ "Optimize for this PC…", "smaller file, less GPU" });
     if (wr.isLocal) items.push_back({ "Delete", "" });
     items.push_back({ "Back", "" });
     actions.setItems(items);
@@ -703,7 +706,8 @@ void App::wallpaperDetail(const Wallpaper& w) {
     const int previewIndex = canPreview ? 1 : -1;
     const int assignIndex  = canPreview ? 2 : 1;
     const int exportIndex  = canPreview ? 3 : 2;
-    const int deleteIndex  = wr.isLocal ? exportIndex + 1 : -1;
+    const int optimizeIndex = canOptimize ? exportIndex + 1 : -1;
+    const int deleteIndex  = wr.isLocal ? (canOptimize ? optimizeIndex + 1 : exportIndex + 1) : -1;
 
     int choice = actions.run();
     if (choice == -1) return;
@@ -711,6 +715,7 @@ void App::wallpaperDetail(const Wallpaper& w) {
     else if (choice == previewIndex)  previewWallpaper(wr);
     else if (choice == assignIndex)   assignToMonitor(wr);
     else if (choice == exportIndex)   exportWallpaper(wr);
+    else if (choice == optimizeIndex) optimizeWallpaper(wr);
     else if (choice == deleteIndex)   deleteWallpaper(wr);
 }
 
@@ -910,6 +915,83 @@ void App::exportWallpaper(const Wallpaper& w) {
         notify("Export", { { color::green, "✓ Saved to:" }, { color::gray, narrow(dest) } });
     else
         notify("Export failed", { { color::red, err } });
+}
+
+void App::optimizeWallpaper(const Wallpaper& w) {
+    std::wstring src;
+    if (!prepareMedia(w, src)) return;
+
+    std::wstring dest = src;
+    size_t dot = dest.find_last_of(L'.');
+    size_t slash = dest.find_last_of(L"\\/");
+    if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
+        dest.resize(dot);
+    dest += L".opt.mp4";
+
+    struct Ctx {
+        App* app;
+        int lastPct;
+        std::string title;
+    };
+    Ctx ctx{ this, -2, w.title };
+
+    auto onProgress = +[](int pct, void* vctx) {
+        auto* c = (Ctx*)vctx;
+        if (pct == c->lastPct) return;
+        c->lastPct = pct;
+        Frame f;
+        draw::banner(f);
+        std::string ot;
+        ot.reserve(14 + c->title.size());
+        ot.append("Optimizing · ").append(c->title);
+        draw::title(f, ot);
+        f.line();
+        if (pct < 0) {
+            f.raw(color::cyan).raw("  Working…").raw(color::reset).line();
+        } else {
+            int filled = pct / 5;
+            std::string bar(filled, '#');
+            bar.append(20 - filled, '.');
+            char buf[96];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE, "  Shrinking for this PC  [%s] %3d%%", bar.c_str(), pct);
+            f.raw(color::cyan).raw(buf).raw(color::reset).line();
+        }
+        c->app->m_term.present(f);
+    };
+
+    {
+        Frame f;
+        draw::banner(f);
+        std::string ot;
+        ot.reserve(14 + w.title.size());
+        ot.append("Optimizing · ").append(w.title);
+        draw::title(f, ot);
+        f.line();
+        f.raw(color::cyan).raw("  Starting…").raw(color::reset).line();
+        m_term.present(f);
+    }
+
+    OptimizeStats stats;
+    std::string oerr, note;
+    if (!optimizeVideo(src, dest, onProgress, &ctx, stats, oerr, note)) {
+        notify("Optimize failed", { { color::red, oerr } });
+        return;
+    }
+
+    char sum[128];
+    _snprintf_s(sum, sizeof(sum), _TRUNCATE, "%dx%d → %dx%d, %.1f MB",
+                stats.inW, stats.inH, stats.outW, stats.outH,
+                stats.outBytes / 1048576.0);
+    pointConfigAtMedia(src, dest);
+    m_config = Config::load();
+    std::string rerr;
+    if (m_engine.isRunning()) m_engine.restart(rerr);
+    std::vector<std::pair<const char*, std::string>> lines = {
+        { color::green, std::string("✓ Now playing the lighter copy.") },
+        { color::gray, sum },
+    };
+    if (!note.empty()) lines.push_back({ color::yellow, note });
+    notify("Optimize", lines);
 }
 
 void App::importWallpaper() {
@@ -1192,7 +1274,7 @@ void App::performanceSettings() {
 
         char timeout[32];
         if (m_config.occlusionTimeoutSec <= 0)
-            _snprintf_s(timeout, sizeof(timeout), _TRUNCATE, "never");
+            _snprintf_s(timeout, sizeof(timeout), _TRUNCATE, "auto (8s)");
         else
             _snprintf_s(timeout, sizeof(timeout), _TRUNCATE, "%d sec", m_config.occlusionTimeoutSec);
 

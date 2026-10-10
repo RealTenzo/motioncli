@@ -46,6 +46,7 @@ private:
     bool applyWallpaper(const Wallpaper& w);
     void assignToMonitor(const Wallpaper& w);
     void exportWallpaper(const Wallpaper& w);
+    void optimizeWallpaper(const Wallpaper& w);
     bool ensureCatalog(bool forceRefresh = false);
     void notify(const std::string& title,
                 const std::vector<std::pair<const char*, std::string>>& lines);

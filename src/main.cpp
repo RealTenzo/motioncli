@@ -1,4 +1,5 @@
 #include "app/app.h"
+#include "core/transcode.h"
 #include "core/wallpaper.h"
 #include "util/log.h"
 
@@ -20,11 +21,19 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
     }
 
     bool isEngine = false;
+    bool isOptimize = false;
     for (const auto& a : args) {
         if (a == L"--render" || a == L"--startup") {
             isEngine = true;
             break;
         }
+        if (a == L"--optimize") {
+            isOptimize = true;
+        }
+    }
+
+    if (isOptimize) {
+        return motion::runOptimize();
     }
 
     motion::log::init(!isEngine);
