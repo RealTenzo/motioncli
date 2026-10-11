@@ -821,9 +821,65 @@ bool App::prepareMedia(const Wallpaper& w, std::wstring& outPath) {
     return true;
 }
 
+bool App::prepareEfficientMedia(const Wallpaper& w, std::wstring& outPath) {
+    if (!prepareMedia(w, outPath)) return false;
+    if (!needsOptimize(outPath)) return true;
+
+    std::wstring dest = outPath;
+    size_t dot = dest.find_last_of(L'.');
+    size_t slash = dest.find_last_of(L"\\/");
+    if (dot != std::wstring::npos && (slash == std::wstring::npos || dot > slash))
+        dest.resize(dot);
+    dest += L".opt.mp4";
+
+    if (!fileExists(dest)) {
+        struct Ctx {
+            App* app;
+            int lastPct;
+            std::string title;
+        };
+        Ctx ctx{ this, -2, w.title };
+
+        auto onProgress = +[](int pct, void* vctx) {
+            auto* c = (Ctx*)vctx;
+            if (pct == c->lastPct) return;
+            c->lastPct = pct;
+            Frame f;
+            draw::banner(f);
+            std::string pt;
+            pt.reserve(14 + c->title.size());
+            pt.append("Preparing · ").append(c->title);
+            draw::title(f, pt);
+            f.line();
+            if (pct < 0) {
+                f.raw(color::cyan).raw("  Slimming down for this PC…").raw(color::reset).line();
+            } else {
+                int filled = pct / 5;
+                std::string bar(filled, '#');
+                bar.append(20 - filled, '.');
+                char buf[96];
+                _snprintf_s(buf, sizeof(buf), _TRUNCATE, "  Slimming down  [%s] %3d%%", bar.c_str(), pct);
+                f.raw(color::cyan).raw(buf).raw(color::reset).line();
+            }
+            c->app->m_term.present(f);
+        };
+
+        OptimizeStats stats;
+        std::string oerr, note;
+        if (!optimizeVideo(outPath, dest, onProgress, &ctx, stats, oerr, note)) {
+            notify("Efficient playback", {
+                { color::yellow, std::string("Using original file: ").append(oerr) },
+            });
+            return true;
+        }
+    }
+    outPath = dest;
+    return true;
+}
+
 bool App::applyWallpaper(const Wallpaper& w) {
     std::wstring path;
-    if (!prepareMedia(w, path)) return false;
+    if (!prepareEfficientMedia(w, path)) return false;
 
     m_config.mode = WallpaperMode::Span;
     m_config.currentWallpaperId = w.id;
@@ -878,7 +934,7 @@ void App::assignToMonitor(const Wallpaper& w) {
     if (choice < 0 || choice >= (int)monitors.size()) return;
 
     std::wstring path;
-    if (!prepareMedia(w, path)) return;
+    if (!prepareEfficientMedia(w, path)) return;
 
     m_config.monitorAssignments[monitors[choice].device] = path;
     m_config.mode = WallpaperMode::PerMonitor;
@@ -1086,7 +1142,7 @@ void App::perMonitorSetup() {
 
         Wallpaper w = *m_library.items()[wi];
         std::wstring path;
-        if (!prepareMedia(w, path)) continue;
+        if (!prepareEfficientMedia(w, path)) continue;
 
         m_config.monitorAssignments[monitors[choice].device] = path;
         m_config.mode = WallpaperMode::PerMonitor;

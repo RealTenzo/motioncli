@@ -43,6 +43,7 @@ private:
 
     int  pickWallpaper(const std::string& title, const std::string& subtitle);
     bool prepareMedia(const Wallpaper& w, std::wstring& outPath);
+    bool prepareEfficientMedia(const Wallpaper& w, std::wstring& outPath);
     bool applyWallpaper(const Wallpaper& w);
     void assignToMonitor(const Wallpaper& w);
     void exportWallpaper(const Wallpaper& w);

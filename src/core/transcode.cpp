@@ -95,7 +95,13 @@ bool needsOptimize(const std::wstring& path) {
     }
     if (shutdown) MFShutdown();
     if (uninit) CoUninitialize();
-    return probed && h > 800;
+    return probed && h > targetHeight() + 80;
+}
+
+int targetHeight() {
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    if (screenH <= 0) screenH = 768;
+    return screenH <= 800 ? 720 : 1080;
 }
 
 bool optimizeVideo(const std::wstring& src, const std::wstring& dest,
@@ -147,11 +153,11 @@ bool optimizeVideo(const std::wstring& src, const std::wstring& dest,
         fail("Could not read video dimensions");
         return false;
     }
-    if (inH <= 800) {
+    if (inH <= targetHeight() + 80) {
         fail("Video is already efficient for this PC");
         return false;
     }
-    int outH = 720;
+    int outH = targetHeight();
     int outW = (inW * outH / inH) & ~1;
     if (outW < 2) outW = 2;
     long long bitrate = (long long)outW * outH * fpsN / (fpsD == 0 ? 1 : fpsD) / 8;

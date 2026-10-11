@@ -13,6 +13,7 @@ struct OptimizeStats {
 };
 
 bool needsOptimize(const std::wstring& path);
+int targetHeight();
 bool optimizeVideo(const std::wstring& src, const std::wstring& dest,
                    void(*onProgress)(int, void*), void* ctx,
                    OptimizeStats& stats, std::string& err, std::string& note);
